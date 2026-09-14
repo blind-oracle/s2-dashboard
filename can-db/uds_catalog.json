@@ -1,0 +1,469 @@
+{
+  "_meta": {
+    "title": "LiveWire S2 Del Mar - UDS DID catalog",
+    "description": "Machine-readable attribution of the active UDS DID sweep (service 0x22 ReadDataByIdentifier) across the 9 mapped diagnostic modules. This is the UDS-layer companion to the broadcast-CAN .dbc: values here are NOT broadcast on secondary CAN and were harvested via the AtomS3 firmware Diagnostics mode + tools/uds_map.py / tools/stream_uds.py.",
+    "generated": "2026-07-29",
+    "generated_from": [
+      "docs/livewire_s2_CAN_uds_data_map.md (S1 module/DID table + S2 per-module bullets + S6/S7)",
+      "dbc/livewire_s2_delmar_secondary.dbc (UDS-DERIVED CALIBRATION / CROSS-CHECKS block + MODULE MAP - RESOLVED)",
+      "docs/ride_analysis.md (CONFIRMED UDS attributions table)"
+    ],
+    "note": "GENERATED FROM THE DOCS - not hand-authored ground truth. The prose docs above remain authoritative; regenerate this file when they change. Scales/offsets marked candidate are direction/structure-confirmed but not unit-locked. See dbc/README.md for the schema and the cross-layer link table.",
+    "status_values": {
+      "confirmed": "corroborated across >=2 sessions/intents or pinned by direct count; safe to rely on",
+      "candidate": "direction/structure holds but scale, exact offset, or full semantics still open (includes 0x27 security-locked DIDs, whose contents are inferred by adjacency)",
+      "refuted": "an earlier attribution that was disproven; kept so the dead hypothesis is not re-attempted"
+    },
+    "bus": {
+      "transport": "ISO-TP / UDS over the DLC, gatewayed by the BCM; 0x22 ReadDataByIdentifier reads, 0x19/02 ReadDTC overheard passively",
+      "module_count": "9 mapped responders (a floor: resp 0x6E6/req 0x6DE and target 0x7F2 are unmapped + passive-only; the IMU has no UDS address - the VSC monitors it)",
+      "security": "16 DIDs are 0x27 SecurityAccess-locked across BCM/VSC/TCU (128-bit random seeds); the rest read in default session with plain 0x22",
+      "caveat": "the offline uds_map.py hex-formatter truncates arrays at 46 bytes; multi-frame (ISO-TP) DIDs polled through the round-robin can cross-stitch - such DIDs stay candidate until read under flow control"
+    }
+  },
+  "modules": {
+    "BCM": {
+      "req": "0x7E2",
+      "resp": "0x7EA",
+      "role": "Body Control Module (secondary-bus gateway); F191 41001171A; DTC_COUNT=3 == dash \"BCM 3\"",
+      "dids": {
+        "0202": {
+          "name": "grouped 16-bit ADC snapshot; byte8 = longitudinal accel / traction-demand",
+          "encoding_or_scale": "12x BE16 but a 4/3/1/3/1 replicate pattern = 5 distinct live quantities; b8 oscillates ~78-129, rest-anchor ~106 = 0 g",
+          "status": "confirmed",
+          "evidence": "b8 vs long_g s28 r=0.93 (n=413), s44 r=0.931 vs acc_lon / 0.943 vs torque_del (n=256); rest-anchor 106 on charge, r~0 vs pack current. CAVEAT accel/torque collinear on a bike. The ADC groups are load-reactive housekeeping (HV-bus sag r~0.9-0.97), NOT pack telemetry."
+        },
+        "0204": {
+          "name": "mV-scale internal rails",
+          "encoding_or_scale": "BE16 mV: 0B85/08A9/0CC9/09B5 = 2949/2217/3273/2485 mV",
+          "status": "candidate",
+          "evidence": "static rail/reference read; unexercised."
+        },
+        "0226": {
+          "name": "composite time-sync record (uptime tick ++ Unix-seconds wall-clock)",
+          "encoding_or_scale": "{0201 uptime 0x0204618C} ++ {0200 Unix-sec 0x5F0236DB}; wall-clock anchored ~2020-07",
+          "status": "confirmed",
+          "evidence": "0226 tail == 0200 head exactly; A ticks within a sweep, B advances between sweeps (s26 re-confirmed). A never-network/GPS-synced RTC on a MY2024 bike - usable only as a coarse stream-uptime anchor, not a real timestamp."
+        },
+        "0194": {
+          "name": "ride-mode roster / config table (mode-id <-> slot map)",
+          "encoding_or_scale": "full 7-mode roster (0x134 D1 hi-nibble mode id): 11 Road(user:Street), 22 Sport, 33 Rain, 44 Range(user:Eco), 55 Flat Track, 88 Custom A, 99 Custom B (also 0195-0197)",
+          "status": "confirmed",
+          "evidence": "CAN 0x134 broadcasts only the ACTIVE mode; this is the full roster."
+        },
+        "0170": {
+          "name": "coding / immobilizer / KEY block (0170-0177 contiguous)",
+          "encoding_or_scale": "0x27 security-locked; largest locked surface on the bike",
+          "status": "candidate",
+          "evidence": "12 locked DIDs on BCM incl. the 0170-0177 KEY block + 0120/0141/0145/0147; readable neighbors are single-byte option/feature flags (0123/0132/0136.../0144 = A5A5 init marker)."
+        }
+      }
+    },
+    "LHCM": {
+      "req": "0x7E3",
+      "resp": "0x7EB",
+      "role": "Left Hand Control Module (switch pod); part 0819112-0010; DTC_COUNT=2 == dash \"LHCM 2\"; also carries VIN",
+      "dids": {
+        "F191": {
+          "name": "hardware part number",
+          "encoding_or_scale": "ASCII 71500536A",
+          "status": "confirmed",
+          "evidence": "pure switch cluster - all its states are already on CAN; no high-value data DIDs. 029B/029C analogs here are internal reference rails (drift OPPOSITE the RHCM), NOT twist-grip."
+        }
+      }
+    },
+    "VSC": {
+      "req": "0x7E4",
+      "resp": "0x7EC",
+      "role": "Vehicle Supervisory Controller (supervisory FUNCTION of the PEU/inverter); F193 41001094A2; logs powertrain P-codes, monitors ABS+IMU",
+      "dids": {
+        "020C": {
+          "name": "live MOTOR shaft speed (RPM) + drive-state byte",
+          "encoding_or_scale": "word0 (u16@0) offset-binary 0x8000 = signed MOTOR speed in native RPM (1 rpm/count); byte2 = drive-state (0x01 stop / 0x02 move)",
+          "status": "confirmed",
+          "evidence": "REFINED 2026-07-30 (ultracode round, s61 hot ride): word0-0x8000 ranged 0..4736 over the ride - FAR beyond any km/h scale, so the native unit is MOTOR RPM, not road speed km/h. Tracks the MOTOR more tightly than the wheel (model-fit residual 5-7 rpm to motor/resolver vs 31-40 rpm to the front wheel across s57/s55/s61; slope 0.9997-0.9998, intercept ~-32768; never wraps -> a speed not a raw angle). Correlates r=1.0 with broadcast road speed only because motor rpm is proportional to it via the ~3.85:1 reduction. SUPERSEDES the earlier 'live road speed (km/h)' scale label (the r=1.0-vs-speed evidence was real but the unit was misread). byte2 = 0x02 throughout every driving capture, 0x01 stationary (s59). REVERSE 2026-07-30 (ultracode): word0 is genuinely SIGNED - drops below 0x8000 in reverse (floor ~-90 rpm streamed s8/s22/s23/s28/s31/s44, ~-215 rpm legacy hand-spins), matching broadcast 0x160 rpm sign+magnitude to +/-1 ct. byte2 stays 0x02 (DRIVE) in reverse IDENTICAL to forward - no 0x03 or reverse code exists in the 66-file corpus - so direction is carried ONLY by the word0 sign, never by the drive-state byte."
+        },
+        "0207": {
+          "name": "live torque record (offset-5000): speed-derating drive ceiling + static regen limit + requested/applied/delivered",
+          "encoding_or_scale": "BE16 offset-5000 (0x1388 = zero, same as bus 0x161). word0 (@0) = live drive-torque CEILING that DERATES with speed (NOT a static clamp); word1 (@2) = static regen limit 3750=-1250; @4=requested / @6=applied (candidate) / @8=delivered; bytes10-13 dead 0x00",
+          "status": "confirmed",
+          "evidence": "REFINED 2026-07-30 (s61, 1245 samples): word0 is NOT the static +1875 clamp - it ranges raw 5025..6875 (=+25..+1875, 9 discrete levels), highest at low speed and derating toward ~0 with speed = a constant-power ceiling. @8 (delivered) has the widest live range (-276..+1006, r=0.982-0.989 vs bus 0x161 torque_delivered s61/s57/s55) => CONFIRMED delivered. @4/@6 track delivered closely (requested/applied roles are s61-specific: @4 collapses to r=0.80 in s57) => CANDIDATE. word1=3750=-1250 constant all rides. Offset-5000 = 2nd independent witness for the 0x161 zero. CAVEAT the +1875 drive / -1250 regen clamp MAGNITUDES are still untested - peak live torque reached only ~53% of the drive clamp; never clamped. REVERSE 2026-07-30 (ultracode, s8): @0 drive-ceiling and @2 regen-limit -1250 held flat across all 13 reverse samples (static low-speed limits); @8 delivered tracked broadcast 0x161 including the sign at the exact reverse point (-26/-26); @4/@6 pinned near zero in reverse so the requested-vs-applied ordering stays candidate. FIELD-WEAKENING measured 2026-07-30 (s54/s55/s61, near-full-throttle torque_request vs motor rpm): the @0 ceiling derate IS the constant-power / flux-weakening region above a base speed of ~2200 motor rpm (~48 mph) - REFINED from the full torque-vs-speed envelope: peak torque_request holds ~1120 counts to ~46 mph then rolls off monotonically to 634 @ 99 mph / 455 @ 105 mph (torque x rpm ~constant), while pack power (RESS 0209 x pack V) plateaus at ~60-69 kW (peak 69 kW @ 4411 rpm / ~94 mph, -239 A) from ~48 mph to the ~5000 rpm redline. The base-speed KNEE is ~mode-INVARIANT (Sport and Range both roll off at ~46 mph) but the plateau LEVEL scales with the mode's P1 power cap (020B): Sport ~1120 counts/~69 kW, Range ~867 counts/lower, CustomA ~500-700. Below base speed = constant-torque (power rises with rpm). ~60 kW mechanical after losses ~ the S2's ~84 hp rating."
+        },
+        "0205": {
+          "name": "per-channel state/health array; byte0 = throttle / twist-grip position",
+          "encoding_or_scale": "b0 ~= 2.7x throttle% (2.55x s28 / 2.64-2.75x s44), zero-anchored (b0=0 whenever throttle=0)",
+          "status": "confirmed",
+          "evidence": "s44 moving throttle sweep r=1.000, n=6, 2 zero-anchors; cross-session s28+s44. A DISTINCT field from the RESS 0205 cell array (different module). Raw grip counts are on no CAN frame (nearest broadcast 0x161 throttle%). REVERSE 2026-07-30 (ultracode): b0 is structurally FORWARD-ONLY (zero-anchored, reads 0 in regen/reverse exactly as at closed throttle - the UDS twin of broadcast 0x161 D5) so it cannot encode reverse-throttle magnitude. CAVEAT: b1/b2 IS a genuinely bidirectional channel (s61 dips ~125/62 under drive to ~52/26 under deep regen), never sampled at a true rider reverse-DRIVE extreme - the one place reverse-throttle magnitude might live (needs a UDS-polled reverse-twist capture)."
+        },
+        "0220": {
+          "name": "pack terminal V (u16@4) + separate nominal/rated ~394 V field (u16@0)",
+          "encoding_or_scale": "u16@4 ~1 V/count = live terminal V (sags on discharge, rises on charge); u16@0 flat 393-396 = nominal setpoint constant; b8 = 0x01 ride/park / 0x00 charge",
+          "status": "confirmed",
+          "evidence": "u16@4 pinned across 361 V (s28 sag) -> 402 V (full charge), matches broadcast pack_v +/-1-2 V. SOFTENED: b0:b1 too flat (only +/-3 ct over the 361->403 V swing) to be a live 2nd node - it is the nominal constant, do NOT read 0220 as two live voltages."
+        },
+        "0203": {
+          "name": "byte2 = coarse vehicle speed (redundant)",
+          "encoding_or_scale": "b2 ~= broadcast speed_raw / 10.1",
+          "status": "confirmed",
+          "evidence": "r=1.000 vs broadcast speed s28/s44/s55; 0 at standstill. Real but a 4th speed copy - low value."
+        },
+        "020A": {
+          "name": "active ride-mode ordinal",
+          "encoding_or_scale": "u8 = mode ordinal 1-9 (Road=1, Sport=2, Rain=3, Range=4, Flat Track=5, Custom A=8, Custom B=9); echoes the BCM 0195/0197 mode-id<->slot map",
+          "status": "confirmed",
+          "evidence": "s28 mode-cycle: 020A = 1 (Road) / 2 (Sport) / 8 (Custom A), matching the high nibble of the 0x134 active-mode id and the BCM 0194-0197 roster slots (11,01)/(22,02)/(88,08)/(99,09)/(33,03)/(44,04)/(55,05). A clean UDS active-mode indicator (distinct from the config VALUES in 020B)."
+        },
+        "020B": {
+          "name": "ACTIVE ride-mode calibration triplet: P1=power, P2=regen, P3=throttle-response (per-mode)",
+          "encoding_or_scale": "3x LE16, shared hi-byte 0x21 = base; LOW byte of each = a 0-100 per-mode parameter. P1(@0)=power/torque level, P3(@4)=throttle-response/aggressiveness (both CONFIRMED via blip); P2(@2)=regen level (candidate). Changes with the selected ride mode.",
+          "status": "confirmed",
+          "evidence": "CONFIRMED 2026-07-30 (s63 7-mode cycle WITH return-to-start: Sport read (100,65,75) on all 3 of its segments = zero drift, kills the time-confound). Per-mode low-byte table [P1,P2,P3]: Sport[100,65,75] FlatTrack[100,35,85] Road[85,35,40] Range[45,80,40] Rain[25,20,25] CustomA/B[0,0,0]. IDENTITIES pinned by the throttle-blip discriminator (delivered torque 0x161 @ fixed throttle): Sport-vs-FlatTrack (P1 both 100, P3 75->85) delivered@20% 425->491 => P3=throttle-response; Road-vs-Range (P3 both 40, P1 85->45) delivered@20% 351->294 => P1=power level. P2=regen INFERRED (Range/Eco 80 max, Rain 20 min - not blip-tested). CustomA/B read all-zero (app-programmed config stored elsewhere, not surfaced here). Hard torque/phase clamps are NOT here - mode-INVARIANT VSC 0207 (+1875/-1250, byte-identical across all 7 modes). Corrects the earlier 'static reference triplet' label."
+        },
+        "0206": {
+          "name": "security-locked data block",
+          "encoding_or_scale": "0x27 security-locked (single gated block; top VSC unlock target)",
+          "status": "candidate",
+          "evidence": "the one locked DID on the supervisory controller."
+        },
+        "0208": {
+          "name": "NOT pack current (byte0 = binary lateral-activity flag; byte4 = rolling counter)",
+          "encoding_or_scale": "-",
+          "status": "refuted",
+          "evidence": "REFUTED as current: s28 r=-0.06 over the full -161..+27 A swing, s31 pinned, s35 r=-0.08. The old 'signed system current' promotion rested on narrow-range monotonic co-trends (s13/s16). The genuine UDS pack-current channel is RESS 0209 (a different module). RE-UPHELD 2026-07-30 (s61 mid-ride, widest swing -238..+33 A): held 0x7FFE/0x7FFF (1-LSB toggle) throughout - decisively not current."
+        }
+      }
+    },
+    "RHCM": {
+      "req": "0x7E5",
+      "resp": "0x7ED",
+      "role": "Right Hand Control Module (throttle-side switch pod); part 0812837-0010 / 813636-0066",
+      "dids": {
+        "029A": {
+          "name": "byte2 = GENERAL brake-applied flag (front OR rear)",
+          "encoding_or_scale": "0/1 zero-anchored",
+          "status": "confirmed",
+          "evidence": "r=0.99 s28 (n=11) / 1.00 s44 (n=8) vs broadcast front_brake_press; holds through charge s48. DOWNGRADE 2026-07-29 r1: front-specificity REFUTED - an s57 rear-only brake (0x133 D4=0x10, front=0) set b2, so it flags EITHER brake, not the front lever."
+        },
+        "029B": {
+          "name": "dual-track twist-grip raw ADC -> REFUTED as twist-grip (internal reference rail)",
+          "encoding_or_scale": "chA 06D9=1753 / chB 06DA=1754 of 0FFF=4095, ~43% at rest; small brake-linked sub-field b2:b3 ~558-564",
+          "status": "refuted",
+          "evidence": "6/6 sessions: ADC moved <=~5 counts of 4095 through full throttle sweeps; the SAME analog appears on the throttle-less LHCM and the two modules drift OPPOSITE => internal per-module reference rails, not twist-grip. Single most-corroborated finding. (Raw grip counts sit on VSC 0205 b0 instead.)"
+        },
+        "029C": {
+          "name": "second live analog -> internal reference rail",
+          "encoding_or_scale": "0A87=2695 (~65.8% FS)",
+          "status": "candidate",
+          "evidence": "same reference-rail caveat as 029B."
+        }
+      }
+    },
+    "RESS": {
+      "req": "0x7E6",
+      "resp": "0x7EE",
+      "role": "Rechargeable Energy Storage System (HV BMS / battery); F193 66000297. Highest-value module - per-cell arrays, live pack current + terminal V.",
+      "dids": {
+        "0205": {
+          "name": "per-cell voltage array (full pack)",
+          "encoding_or_scale": "96x BE16 mV/cell = 96S (pinned by direct count); cell-sum/96 = broadcast pack_v",
+          "status": "confirmed",
+          "evidence": "s25 full untruncated read = 192 B = 96 cells - PINNED by DIRECT COUNT (resolves the old ~100S guess). Direction-responsive: sags under discharge (s28 r=0.97, s31 r=0.963 vs pack_i), rises +42 mV on charge (s32-s35). CAN 0x182 carries only min/max/avg of this array. (The earlier 23-cell read was the mapper's 46-byte truncation.)"
+        },
+        "0209": {
+          "name": "pack current, dual HV current-sense channels A + B",
+          "encoding_or_scale": "word0 (u16@0) = channel A wide-range = 1562 + 3.888*I (A) (~0.26 A/count, offset 1562 ct at 0 A); u16@3 (b3:b4) = channel B narrow-range/high-precision, same encoding, HARD-SATURATES at raw ~1432 (~ -33 A)",
+          "status": "confirmed",
+          "evidence": "word0 r=0.996 over I -240..+35 A (s54/s55/s57), slope 3.888 identical s55/s57; opposite-sign across discharge + charge. Channel B tracks word0 to ~1-4 ct at steady state then CLIPS to a constant while word0 keeps falling (min word0 624 at -241 A) - a range-limited sensor, not a filtered copy (OEM P0B1300 A/B correlation). Clean 6-byte single-frame DID = splice-immune. RETRACTION: the earlier '0209 = pack voltage 400.106 V' was an idle-trap concatenation - it is CURRENT, not V (pack V is 021F/0220). NOTE 2026-07-30: bytes 2 & 5 checked and are noise (|r|<=0.28, best-correlate identity shifts between captures) - NOT the low bytes of a 24-bit current."
+        },
+        "020C": {
+          "name": "FF-window over the LOW BYTE of 0209 word0 (pack current)",
+          "encoding_or_scale": "FF + low byte of 0209 word0 (tracks current incl. sign)",
+          "status": "confirmed",
+          "evidence": "value-exact on aligned samples: s27 ff1a, s44 ffb6 (= 0209 0x05B6 discharge excursion), s48 ff2a. Corrects the low-hanging audit's '020C -> pack-V mid byte' fold (0209 is current)."
+        },
+        "021F": {
+          "name": "pack terminal voltage reference",
+          "encoding_or_scale": "~1 V/count (distinct from the ~400 V BMS cell-sum)",
+          "status": "confirmed",
+          "evidence": "matches broadcast pack_v +/-1 V across s25/s26/s28/s29/s31/s32-s35 (discharge + charge), range 365-395 V. THIS (with VSC 0220), not 0209, confirms the 0x181/0x163 pack-V scale against a BMS-internal value."
+        },
+        "0213": {
+          "name": "internal fine SoC / SoE (voltage-instantaneous, load-responsive) - NOT SoH, NOT display SoC",
+          "encoding_or_scale": "BE16 x0.01%; 227A = 8826 => ~88.3%; the 0x227x value is replicated at a fixed offset across >=6 DIDs (0213/021E/0231/0234/0254/021C/0200)",
+          "status": "confirmed",
+          "evidence": "load-responsive: dips on discharge (s28 r=0.97 vs pack_i, s31 r=0.99), rises on charge 8825->8869 (SoH cannot rise intra-session). Sits ~18-22 pts ABOVE broadcast display-SoC 0x185 (s25 87.2% vs 69%). Roles were previously SWAPPED with 020E - corrected. Exact identity (usable-SoC vs energy) still OPEN - do NOT assert it tracks 0x185."
+        },
+        "020E": {
+          "name": "SoH-like reference",
+          "encoding_or_scale": "b0 ~= 97% (0x61)",
+          "status": "confirmed",
+          "evidence": "held 0x61=97 UNCHANGED through the entire s57 which ran display-SoC 100->22% - a display-SoC field would have collapsed ~78 pts, so 020E is decoupled from display SoC and behaves like SoH. Pinned ~97% while real display-SoC was ~83%."
+        },
+        "020D": {
+          "name": "min/avg/max rollup + wide-range coulomb display-SoC scalar",
+          "encoding_or_scale": "b0=b1=b2=b5=b8 = repeated coulomb/display-SoC scalar (~1%/count); b4 = mean of the 0206 array; b3/b7 ~= min, b6 ~= max",
+          "status": "confirmed",
+          "evidence": "the repeated scalar is bit-identical 8/8 sessions (impossible for 9 real sensors); rises 61->95 over the charge and tracks broadcast 0x185 display-SoC DOWN 95->71 on s55 discharge - direction-consistent both ways. RESOLVES the s28 '0213 87% vs display 67%' gap: 020D = wide-range coulomb SoC, 0213 = voltage-instantaneous. CAVEAT 2/8 reads (s27,s44) return an anomalous b4=15 multiplex variant, so the min/avg/max mapping is plausible not airtight."
+        },
+        "025A": {
+          "name": "sign-binned lifetime Ah accumulator (charge + discharge buckets)",
+          "encoding_or_scale": "20x BE32; dword@32 (idx8) = cumulative CHARGE-Ah (~26.1 mAh/ct candidate); dword@12 (idx3) + dword@72 (idx18) = cumulative DISCHARGE-Ah",
+          "status": "candidate",
+          "evidence": "mutually-exclusive freezing across 2 discharge + 3 charge sessions (charge bucket advances only on s32/s39/s48, discharge buckets only on s28/s44) => not a co-trend. Advance CONFIRMED; per-count mAh scale CANDIDATE (needs a large single-swing Ah). MULTI-FRAME ISO-TP: 80-B DID, stays candidate until a clean flow-controlled read locks offsets/scale. REFINED 2026-07-30 (ultracode, s61): discharge bucket set extends to four adjacent dwords {idx3,idx4,idx18,idx19} (idx18/19 ratio 1.19 stable), charge bucket {idx8}; discharge advances idx3/4/18/19 with idx8 frozen, charge advances only idx8."
+        },
+        "025B": {
+          "name": "sign-binned lifetime Ah accumulator (2nd unit/copy)",
+          "encoding_or_scale": "~59.8 mAh/count candidate; lifetime agrees with 025A to 0.6%",
+          "status": "candidate",
+          "evidence": "s32->s48 delivered ~10.8 Ah (025A +419 ct x26.1 = 10.9; 025B +179 ct x59.8 = 10.7 - agree). Multi-frame ISO-TP caveat as 025A."
+        },
+        "025E": {
+          "name": "STALE/FROZEN pack snapshot - NOT the live temperature source",
+          "encoding_or_scale": "199-byte block; byte-identical across a whole session (does not update with thermal load)",
+          "status": "refuted",
+          "evidence": "REFUTED as live per-cell temperature 2026-07-30 (ultracode, s61, spot-checked): 0/199 bytes changed across the entire session (t=0 byte-identical to t=751) through a 42->62 C pack-temperature rise. A stale/reference snapshot; the LIVE per-cell temperature ladder is RESS 0206 (raw-40 C). The earlier x0.1 C reading gave a static ~24.8 C that never tracked heat."
+        },
+        "025C": {
+          "name": "SoC-band-binned throughput histogram (2nd accumulator axis)",
+          "encoding_or_scale": "120 B = 30x BE32 SoC-band bin counters; 025C/0270 = discharge-side, 0269 = charge-side - THREE DISTINCT histograms, NOT replicas",
+          "status": "candidate",
+          "evidence": "dword@84 (idx21, lower-SoC) advances on s28/s31 then freezes; dword@88 (idx22, ~90%) advances in BOTH s44 discharge AND s48 charge, handing off idx21->idx22 as SoC crosses ~88-89%. The coulomb-per-SoC-band data a BMS uses for capacity-fade. REFINED 2026-07-30 (ultracode): 025C/0269/0270 are DISTINCT not replicas - mutually-exclusive regime activation (discharge s61 advances 025C/0270 while 0269 freezes; charge s32/s48 advances 0269 +53/+215 while 025C/0270 freeze). Per-count scale candidate; 120-B ISO-TP-cross-stitch-prone."
+        },
+        "0254": {
+          "name": "FF-flagged cell-mV window over the 0205 array",
+          "encoding_or_scale": "FF + 5-6 cell BE16 mV window; 3887->4177 mV over the charge",
+          "status": "candidate",
+          "evidence": "a window of the single 96-cell 0205 array (with 0260 = 7-cell window, 3816->4177 mV), NOT an independent node - reads as cell voltage, direction-responsive. CANDIDATE (multi-frame): dense rides splice it (s55 read garbled) - trust only the park+charge clean reads."
+        },
+        "0206": {
+          "name": "live per-cell / per-group battery TEMPERATURE array",
+          "encoding_or_scale": "48x u8, T = raw - 40 C (raw 78-109 = 38-69 C); the live per-group pack-temperature ladder (broadcast 0x183 carries only 3 pack thermistors)",
+          "status": "confirmed",
+          "evidence": "REFINED 2026-07-30 (ultracode, s61 discharge, spot-checked): raw-40 gives 38-69 C = physical battery-temp range, and the array-mean rose 43.2 -> 57.0 C tracking the broadcast pack-temp curve 42 -> 58 C. Mid-session DIP (mean 57.7 -> 55.6 C at coast) rules out a monotonic counter/accumulator; magnitude+trend match rules out the old 'DoD/throughput index' and 'balance/IR' readings. Small +1-2 move on charge = little heating on charge, consistent. Distinct from 025E (a FROZEN snapshot, not the live source). 0210 embeds this array + a separate fast block; 021C is a distinct (hi,lo)-pair array - neither is this temperature."
+        },
+        "0204": {
+          "name": "live oscillating BMS estimate (NOT a monotonic counter)",
+          "encoding_or_scale": "twin mirrored BE32 (w0==w1 always) + trailing byte ~45-47; w0 oscillates ~953-998 both directions",
+          "status": "candidate",
+          "evidence": "CONTRADICTS the earlier 'counts down' reading 2026-07-30 (ultracode, s61, 11 polls, spot-checked): w0 = 989/985/957/998/998/971/978/985/953/972/972 - rises AND falls repeatedly, not monotonic. A load-dependent live estimate (candidate: instantaneous power / time- or range-to-empty), sourced from 0200's head; units open. The old '-1 per session' was a 2-snapshot artifact."
+        },
+        "025F": {
+          "name": "per-cell passive-balancing overlay -> RETRACTED (ISO-TP artifact)",
+          "encoding_or_scale": "-",
+          "status": "refuted",
+          "evidence": "the high byte 'flips 00->4C/4D on charge' was an ISO-TP reassembly SPLICE, not a balance bitmap: 0x4C/0x4D are exactly the low bytes of cell voltages 0x104C/0x104D (4172-4173 mV) that only occur at high charge - a cell-array frame cross-stitched into the adjacent accumulator DID by the round-robin poll (all RESS DIDs share responder 0x7EE). Same for 0260/0262. No genuine balance bitmap was isolatable; owed an imbalanced/aged-cell capture or a chunked flow-controlled read."
+        }
+      }
+    },
+    "EHCU": {
+      "req": "0x7E7",
+      "resp": "0x7EF",
+      "role": "Electro-Hydraulic Control Unit (Bosch ABS); F1EE 40800178 == dash \"EHCU 0 ID#40800178\"; full Bosch BOM + VIN un-gated at F1EF",
+      "dids": {
+        "020F": {
+          "name": "live dual per-wheel ABS speed",
+          "encoding_or_scale": "u16@0 = FRONT, u16@2 = REAR, big-endian; ~25x the broadcast 0x326 count (~250 counts/km/h); 0/0 at standstill",
+          "status": "confirmed",
+          "evidence": "STRONGEST attribution in the corpus - s10-s16 r=1.0 in 6/6 + s28/s31 streamed (real-ts, r=1.000). Rear (driven) wheel LEADS front by discrete +256-ct quanta (~2-4% = mild TC-active slip) and never trails; no burnout captured. REVERSE 2026-07-30 (ultracode): both channels are UNSIGNED magnitude, blind to direction - in reverse they only rise in positive magnitude as rpm deepens, never wrap above 0x8000; cannot detect reverse or sub-threshold creep."
+        },
+        "0212": {
+          "name": "live front-brake-pressure block",
+          "encoding_or_scale": "u16@4 front-brake pressure; broadcast ~= 1.214*0212 + 14 (0212 ~= 0.79x broadcast); byte5/6 low nibble 0/2/4/6 = candidate parked brake-lever position",
+          "status": "confirmed",
+          "evidence": "zero at rest, spikes every front-brake event; s28 r=1.0 / s31 r=0.999 (0->415) / s44 r=0.999 (0->2241). Scale refined s44: NOT 1:1, a 0.79 proportional factor (0212's slow poll capped at 1461, missing the 2241 peak). Neither is absolute pressure (no bar/psi ref)."
+        },
+        "0210": {
+          "name": "brake-application block (coarser 2nd channel); byte1 = brake-active flag",
+          "encoding_or_scale": "byte1 0->1 on a press",
+          "status": "confirmed",
+          "evidence": "s10 r0.92 / s14 r1.0; byte1 flips on press (s29); 0 on zero-brake rides (s11/s13)."
+        },
+        "0200": {
+          "name": "wheel-speed head (b0-1 coarse speed) + 12 V aux-rail scalar (b3)",
+          "encoding_or_scale": "b0/b1 = coarse vehicle speed (0 at park/charge, scales with ride speed); b3 ~= 174-178 = ~14 V aux rail",
+          "status": "confirmed",
+          "evidence": "two fields in one DID (6 sessions). b0 = 28 s28 / 9 s44 / 92 s55 scaling with speed; 0 at park + every charge session. A 5th speed copy - redundant but direction-consistent."
+        },
+        "0211": {
+          "name": "12 V aux rail (~14.1 V) - NOT a wake counter",
+          "encoding_or_scale": "0xAE = 174 ~= 14 V",
+          "status": "confirmed",
+          "evidence": "s14 decisive - value wobbles 176<->178 BOTH directions; a counter only increments. Resolves the map's open 'rail OR counter'."
+        },
+        "021D": {
+          "name": "resettable use-counter / index - NOT a temperature",
+          "encoding_or_scale": "u16 (2-byte, same format on active sweep AND streamed poll - no truncation); increments slowly with use, resets to a low value on module power loss",
+          "status": "refuted",
+          "evidence": "REFUTED as temperature 2026-07-30 (ultracode, spot-checked): dead-FLAT within every session (s61 = 10 for all 11 polls, s59 = 7) while broadcast 0x183 temp1 rose 39->71 C (s57) / 39->58 C (s61) - a live sensor cannot stay flat through a 30 C rise. The catalog's cross-session 243->250 'tracking' + 'returns to baseline' was actually a monotonic counter that RESET on a power cycle (243/243/243/244/246/250 then reset -> 7 -> 10). Resolves the apparent payload-length puzzle (both paths return the same 2-byte u16). A per-session use/op counter; exact unit open."
+        },
+        "021B": {
+          "name": "ABS operating / event counters",
+          "encoding_or_scale": "little-endian LE32 framed by 0x3207 record markers: 67811, paired 10132/10183, 5009, 408",
+          "status": "candidate",
+          "evidence": "ABS/EBD intervention + operating stats, nowhere on CAN; block REORGANIZES idle->charge (a live rolling log). LE trailing zeros confirm endianness. UPDATE 2026-07-30 (ultracode): 021B DOES respond on the streamed path - a complete 400-B multi-frame reassembles on s28/s32/s55/s57 (leading marker 07 32.., byte2 advances 18->19 s55->s57); absent only on s26/s61 (intermittent). Supersedes the 'single-source/returned-NRC' note; internal field decode stays candidate (400-B splice risk)."
+        }
+      }
+    },
+    "OBC_HV": {
+      "req": "0x7D3",
+      "resp": "0x7DB",
+      "role": "HV box / On-Board Charger candidate; F193 41001111A5 (shares VSC's 41001 HV-supplier family). DARK except during AC charge - the s32-s48 charge run first woke these DIDs.",
+      "dids": {
+        "0232": {
+          "name": "charger / plug-state word",
+          "encoding_or_scale": "00 00 02 00 = NOT taking charge; 02 01 02 02 = charging (entire duration); mirrored at 0200 bytes 8-11",
+          "status": "confirmed",
+          "evidence": "100% separation over 12 sessions (parked/riding/mid-charge-unplugged s44 all show not-charging; s32/s39/s48 charging). Single ISO-TP frame (zero reassembly risk). The s44 A/B (unplugged mid-charge -> 00000200) rules out a session-type artifact. A clean plugged/charging boolean over UDS."
+        },
+        "0209": {
+          "name": "charge-current / charge-power indicator",
+          "encoding_or_scale": "FF + byte1; byte1 = 0x00 not-charging / 0x4F(79) at CC (~11 A) / 0x24(36) at CV taper (~4 A)",
+          "status": "confirmed",
+          "evidence": "steps with charge stage, zero when not charging (s44 unplugged A/B = 0). FE10/FEE1 share the same body with a trailing 16-bit magnitude word (0xB710 @~11 A -> 0x6B62 @~4 A). Absolute A-scale open. (Distinct DID from RESS 0209 - different module.)"
+        },
+        "0201": {
+          "name": "charge-gated CHARGER/OBC temperature (heatsink)",
+          "encoding_or_scale": "word@4 raw 714-754 idle/unplugged -> 885-928 at CC peak -> cools to 821 as CV tapers; x0.1 C - platform offset (candidate)",
+          "status": "confirmed",
+          "evidence": "a thermal ARC that COOLS when charge current drops - a voltage/SoC would stay high at full charge, so this is temperature. Promotes the 0200 ~700 internal 4-ch sensor cluster (031B/02B8/02BF = 795/696/703). Exact C scale/offset still open (raw needs a cold-soak read; suspect a -40 platform offset)."
+        },
+        "0235": {
+          "name": "pre-contactor DC-link voltage (bytes3-4) + coarse pack terminal-voltage byte (byte5)",
+          "encoding_or_scale": "bytes3-4 x0.1 V rose 405->411 V on charge (~+8 V above RESS terminal = a distinct DC-link node); byte5 ~2.55 V/count, b5 ~= 0.39*pack_v",
+          "status": "confirmed",
+          "evidence": "byte5 DOWNGRADE 2026-07-29 r1 (adversarial QA): it was briefly promoted as a coarse CURRENT mirror - a LOAD-SAG-TRAP artifact, RETRACTED. Pooled n=62 (s28+s44+s54+s55+s57): r(b5,pack_v)=+0.999 vs r(b5,pack_i)=+0.850, and the voltage-model slope is session-stable (0.34-0.45 ct/V) while the current-model slope wanders 3x. So byte5 = coarse terminal-VOLTAGE, not current. CAVEAT 2026-07-30 (s61 mid-ride discharge): the bytes3-4 DC-link word did NOT sag with the pack under -238 A load (stayed ~400 V while broadcast pack_v fell to ~300 V) - so the '+8 V distinct DC-link node' behaviour only proved out on the CHARGE side; under drive it reads nominal/rated, not the live terminal (use RESS 021F / VSC 0220 for live V)."
+        },
+        "0200": {
+          "name": "pack / DC-link NOMINAL voltage (x0.1 V, ~400 rated) + internal 4-ch sensor cluster + mirrored plug-state",
+          "encoding_or_scale": "0F A0 word = 4000 -> x0.1 = 400.0 V idle, rising to 404.3 V on charge; bytes 8-11 mirror 0232 plug-state; ~700 sensor triplet = charger temps",
+          "status": "confirmed",
+          "evidence": "corrects the earlier x0.0625=250.0 V setpoint guess - the scale is x0.1 V. byte0=0xFF alias structure (0210 = FF A0.. vs 0200 = 0F A0..). CAVEAT 2026-07-30 (s61 mid-ride): this is a NOMINAL/rated node, NOT the live sagging terminal - it stayed pinned {3999,4000} while broadcast pack_v sagged to ~300 V under -238 A (r=-0.216 vs pack_v). Use RESS 021F / VSC 0220 for live terminal V."
+        },
+        "FEE0": {
+          "name": "charge-state-multiplexed value - NOT a monotonic lifetime counter",
+          "encoding_or_scale": "~4333 not-charging / ~1520 charging; non-monotonic WITHIN a charge session",
+          "status": "refuted",
+          "evidence": "RETRACTED as a lifetime op counter: reads ~4333 parked/riding (incl. s44 unplugged) and ~1520 while charging, and is non-monotonic within a charge (s32 1523->1510 falling, s48 1513->1524 rising) - a lifetime counter cannot decrease or jump by mode. Reconciles the doc's own 'decrements to 1523' (charge state) vs 'increments 4335->4337' (idle state). Meaning open (a mode-dependent time/energy-to-full estimate is the leading hypothesis)."
+        },
+        "FEE1": {
+          "name": "shares FE10's charge-current-register body - NOT a paired accumulator",
+          "encoding_or_scale": "00-prefix copy of FE10 (which is FF-prefix); trailing 16-bit charge magnitude",
+          "status": "refuted",
+          "evidence": "REFUTED as a monotone accumulator: FE10/FEE1 are a LIVE charge-current register (see 0209), not a counter - the magnitude word steps with charge stage (0xB710 @~11 A -> 0x6B62 @~4 A) and is zero when not charging. The prior 'FE10/FEE1 = coulomb accumulator' reading is dead."
+        }
+      }
+    },
+    "TCU": {
+      "req": "0x7D4",
+      "resp": "0x7DC",
+      "role": "Telematics Control Unit (eSIM + GPS); F191 41001221. CONFIRMED - retracts the old 'PEU/motor-inverter candidate' guess. Privacy-sensitive.",
+      "dids": {
+        "0200": {
+          "name": "LIVE GPS position",
+          "encoding_or_scale": "2x BE IEEE-754 float32 (lat, lon); refresh cadence COARSE ~minutes (~5 min / significant-move), not per-second",
+          "status": "confirmed",
+          "evidence": "tracked live across the 2026-07-28 burst (lat <redacted>, lon <redacted>, owner location redacted). Broadcast GPS frame 0x394 is all-zero - this is the only position source. Frame-granularity route tracing NOT feasible. On no CAN frame; privacy-sensitive."
+        },
+        "0298": {
+          "name": "eSIM ICCID",
+          "encoding_or_scale": "20-digit ASCII, <ICCID-redacted> (MII 89, issuer '46'=Sweden => global M2M SIM)",
+          "status": "confirmed",
+          "evidence": "physical eSIM serial of the telematics modem; on no CAN frame. Full value in the raw catalog docs/uds_map/module_7D4.txt."
+        },
+        "0296": {
+          "name": "serving PLMN (LIVE and DYNAMIC)",
+          "encoding_or_scale": "ASCII 'MCC MNC'",
+          "status": "confirmed",
+          "evidence": "reads Verizon <home-PLMN-redacted> (s6) -> T-Mobile 310/260 across the 2026-07-28 burst, with live searching->register transitions (s26 & s32); AT&T 310/410 in s61 (3rd carrier). This is the SERVING PLMN, NOT the SIM home network - do NOT use it as ground truth for the 0x392 <operator-id-redacted> crack (that stayed fixed through the carrier switch => it is the SIM HOME-network id)."
+        },
+        "0297": {
+          "name": "network SIGNAL-STRENGTH / service-presence metric",
+          "encoding_or_scale": "payload [b0][02][05]; byte0 (u8) = signal strength / service presence (registered band ~40-105; 0 = de-registered; 0x8D=141 = reacquire sentinel); b1:b2 = fixed echoed tag 02 05",
+          "status": "confirmed",
+          "evidence": "CONFIRMED 2026-07-30 (ultracode, n=284 TCU polls across 49 stream_* captures): b0==0 occurs ONLY during blank-PLMN de-registration (6 zero-sample captures: s20/s23/s26/s53/s58/s61) and NEVER while registered; 141 appears only as the first poll of a session or right after a 0 (reacquire), not a genuine peak; band 1..39 empty. Sibling of 028A (2nd network-status byte). Precise RSSI/dBm/linear units remain PLAUSIBLE only (not proven linear)."
+        },
+        "028A": {
+          "name": "modem / network status cluster (RSSI candidate)",
+          "encoding_or_scale": "b1 leading RSSI candidate; part of the 028x-029x telematics neighborhood (0290/0297 also vary)",
+          "status": "candidate",
+          "evidence": "varies every session incl. the long s12 ride (b1 89->73); movers fluctuate with network conditions not vehicle state, no low-signal A/B yet. RSSI NOT isolated - needs a controlled stationary-vs-low-signal A/B (watch the dash bars drop)."
+        },
+        "0283": {
+          "name": "IMSI / IMEI / auth-key candidates (security-locked)",
+          "encoding_or_scale": "0x27 security-locked; adjacent to cleartext ICCID(0298)/PLMN(0296)/GPS(0200) - which-is-which is adjacency inference (also 0285, 0289)",
+          "status": "candidate",
+          "evidence": "IMSI is absent from all cleartext, almost certainly behind these three locked telematics records. Needs a successful 0x27 SecurityAccess unlock, then grep the returns for a 15-digit ASCII string starting <home-PLMN-redacted> or an 8-byte packed-BCD IMSI."
+        },
+        "FEF0": {
+          "name": "firmware / part VERSION strings - NOT counters",
+          "encoding_or_scale": "ASCII behind a fixed FF 01 F4 prefix: '41005' / '41005B1.250040' / '4' (FEF1/FEF4)",
+          "status": "confirmed",
+          "evidence": "no numeric progression - corrects the census 'counter candidate' reading."
+        },
+        "0290": {
+          "name": "serving-cell / registration IDENTITY blob (static within a session)",
+          "encoding_or_scale": "17 bytes (e.g. <cell-id-redacted> ..); byte-identical across all polls within a session; changes only when the camped cell/registration changes (candidate CID/TAC/LAC)",
+          "status": "candidate",
+          "evidence": "REFINED 2026-07-30 (ultracode, s61): byte-identical across all 10 polls but different from baseline (<cell-id-A> -> <cell-id-B>) = static-within-session, varies only with the serving cell - NOT a fast-varying status cluster. Sits in the 028x-029x telematics neighborhood alongside 028A / 0296 (PLMN) / 0297 (RSSI). Cross-session network-change A/B still needed to lock the field map."
+        },
+        "F18C": {
+          "name": "TCU ECU serial number",
+          "encoding_or_scale": "ASCII '<serial-redacted>'",
+          "status": "confirmed",
+          "evidence": "LAN sweep 2026-07-29; distinct from the F191 mfg HW number 41001221."
+        },
+        "F199": {
+          "name": "programming / calibration date",
+          "encoding_or_scale": "ASCII YYYYMMDD = 20241005 (2024-10-05)",
+          "status": "confirmed",
+          "evidence": "LAN sweep 2026-07-29; F19D/F1E6/F1FE carry date+version fragments of the same string."
+        },
+        "F181": {
+          "name": "application software identification / version fields",
+          "encoding_or_scale": "byte-coded version (03 07 01 05 02 02 0C 00 ...); F180 = a parallel config/version block",
+          "status": "candidate",
+          "evidence": "LAN sweep 2026-07-29."
+        },
+        "F193": {
+          "name": "supplier ECU hardware version",
+          "encoding_or_scale": "ASCII 'B1.2'",
+          "status": "confirmed",
+          "evidence": "LAN sweep 2026-07-29."
+        }
+      }
+    },
+    "ID_ONLY": {
+      "req": "0x7F0",
+      "resp": "0x7F8",
+      "role": "Identification-only ECU; F1F5 supplier P/N 6016139-0020. No data blocks exist - a hard cap.",
+      "dids": {
+        "F1F5": {
+          "name": "supplier part number",
+          "encoding_or_scale": "ASCII 6016139-0020",
+          "status": "confirmed",
+          "evidence": "live-DATA/FDxx/FExx ranges return nothing => not the TCU, not a data source. 8 identification DIDs only."
+        }
+      }
+    }
+  },
+  "service_support": {
+    "_note": "Live NRC-gating probe over the LAN 2026-07-29 (Diagnostics/TX, extended session via 0x10 03). Bare-SID / seed requests ONLY - non-actuating (no valid identifier => nothing actuated; every request was rejected). Legend: 0x13 incorrectLength => service SUPPORTED (parsed the SID); 0x11 serviceNotSupported; 0x33 securityAccessDenied => supported but LOCKED; 0x22 conditionsNotCorrect; seed128 => 0x27 level-1 returned a 16-byte (128-bit) random seed. CAVEAT: 0x13 on a bare service means the ECU validated FORMAT before any security check, so a well-formed request may still NRC 0x33 - NOT yet proven ungated.",
+    "BCM_7E2":  { "write_2E": "0x13", "iocontrol_2F": "0x13", "routine_31": "0x13", "seed_27": "seed128", "event_86": "0x11", "link_87": "0x11" },
+    "VSC_7E4":  { "write_2E": "0x33", "iocontrol_2F": "0x11", "routine_31": "0x13", "seed_27": "seed128" },
+    "RESS_7E6": { "write_2E": "0x33", "iocontrol_2F": "0x13", "routine_31": "0x13", "seed_27": "seed128" },
+    "EHCU_7E7": { "write_2E": "0x13", "iocontrol_2F": "0x13", "routine_31": "0x11", "seed_27": "0x22" },
+    "OBC_7D3":  { "write_2E": "0x33", "iocontrol_2F": "0x33", "routine_31": "0x13", "seed_27": "seed128" },
+    "TCU_7D4":  { "write_2E": "0x13", "iocontrol_2F": "0x13", "routine_31": "0x13", "seed_27": "seed128" },
+    "LHCM_7E3": { "write_2E": "0x13", "iocontrol_2F": "0x13", "routine_31": "0x33", "seed_27": "seed128" },
+    "RHCM_7E5": { "write_2E": "0x13", "iocontrol_2F": "0x13", "routine_31": "0x33", "seed_27": "seed128" },
+    "highlights": [
+      "BCM (owns lights/signals) SUPPORTS 0x2F IO-control AND 0x31 routine, returning 0x13 (not 0x33) on a bare probe => output control is REACHABLE; any security gate is post-format. Untested whether a well-formed 2F actuates or NRCs 0x33.",
+      "Writes (0x2E) are security-locked (0x33) on VSC/RESS/OBC; routines (0x31) locked on RHCM/LHCM; OBC locks BOTH write + IO-control.",
+      "VSC (inverter supervisory) exposes NO IO-control (0x11) and locks writes => no UDS actuation of inverter outputs without the 0x27 key.",
+      "TCU supports 0x2E/0x2F/0x31 all UNLOCKED on the bare probe (0x13) - the most open control surface, but 'send SMS' is not a UDS primitive and the M2M SIM is likely data-only.",
+      "Every module returns a 128-bit seed at 0x27 level 1 (requesting is harmless). EHCU 0x27 => 0x22 conditionsNotCorrect (needs a specific state/session).",
+      "Unmapped responders 0x6DE and 0x7F2 were SILENT to physical-addressed 0x22/0x3E (may need functional addressing or a specific state).",
+      "IO-CONTROL ENUMERATION 2026-07-29 (on-device /uds/sweep?io=1, non-actuating 2F<DID>00): ZERO IO-control DIDs on BCM (0x0000-0x0FFF) and RESS/EHCU/TCU/LHCM (0x0000-0x03FF) - every 2F<DID>00 => NRC 0x31 (requestOutOfRange). So 0x2F is a stack stub with no populated DIDs in the searchable low range; actuator/output tests are almost certainly RoutineControl (0x31), whose RIDs are undocumented (64k space) and unsafe to brute-force on the BCM (fob-table-wipe risk). Actuation (blink lights, ABS test, ...) is DT-II-recipe-gated, same wall as fob-pairing. Do NOT re-hunt the 0x2F low range."
+    ]
+  }
+}

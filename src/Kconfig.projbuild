@@ -1,0 +1,168 @@
+menu "S2 Dashboard (LiveWire S2 CAN logger)"
+
+    menu "CAN interface"
+
+        config S2_CAN_TX_GPIO
+            int "CAN TX GPIO (to transceiver TXD)"
+            range 0 48
+            default 4
+            help
+                ESP32-S3 GPIO driving the transceiver's TXD input. Any free GPIO works
+                (routed through the GPIO matrix). GPIO4 is exposed on the ESP32-S3-Zero
+                header and has no strapping or on-board function.
+                Do NOT use: 0 (BOOT), 3/45/46 (strapping), 19/20 (USB), 21 (LED),
+                26-37 (flash/PSRAM, not exposed), 43/44 (UART0), 22-25 (do not exist).
+
+        config S2_CAN_RX_GPIO
+            int "CAN RX GPIO (from transceiver RXD)"
+            range 0 48
+            default 5
+            help
+                ESP32-S3 GPIO reading the transceiver's RXD output. With an MCP2551
+                (5 V part) this line MUST go through a resistor divider or level
+                shifter: the ESP32-S3 is not 5 V tolerant. Same forbidden pins as TX.
+
+        config S2_CAN_BITRATE
+            int "Bus bitrate (bit/s)"
+            range 10000 1000000
+            default 500000
+            help
+                The LiveWire S2 secondary bus runs classical CAN at 500 kbit/s.
+
+        config S2_CAN_LISTEN_ONLY
+            bool "Listen-only mode (never transmit, never ACK)"
+            default y
+            help
+                Passive tap: the controller does not acknowledge frames and never
+                sends error frames, so a wiring or timing mistake cannot disturb
+                the motorcycle's bus. Required off for UDS polling.
+
+        config S2_CAN_RX_QUEUE_LEN
+            int "RX frame queue depth"
+            range 16 1024
+            default 256
+
+        config S2_CAN_TX_QUEUE_DEPTH
+            int "Driver TX queue depth"
+            range 1 32
+            default 8
+
+    endmenu
+
+    menu "Serial logging"
+
+        config S2_LOG_RAW_FRAMES
+            bool "Log every received frame in candump-like format"
+            default n
+            help
+                Prints "(t) can0 160#0003E80BB8000000" for each frame. Several
+                hundred lines per second on a live bus; useful for captures.
+
+        config S2_LOG_SIGNAL_CHANGES
+            bool "Log decoded signals when their value changes"
+            default y
+
+        config S2_LOG_CHANGE_MIN_INTERVAL_MS
+            int "Minimum interval between change logs of the same signal (ms)"
+            range 0 60000
+            default 250
+            depends on S2_LOG_SIGNAL_CHANGES
+            help
+                Rate limit per signal so noisy channels (IMU, torque) do not flood
+                the console. 0 logs every change.
+
+        config S2_LOG_UNKNOWN_IDS
+            bool "Log frames whose id is not in the database (first sight + changes)"
+            default y
+
+        config S2_SUMMARY_PERIOD_MS
+            int "Period of the vehicle summary block (ms, 0 = off)"
+            range 0 600000
+            default 2000
+
+        config S2_FRAME_TABLE_PERIOD_S
+            int "Period of the per-id frame statistics table (s, 0 = off)"
+            range 0 3600
+            default 30
+
+        config S2_E2E_SKIP_BAD_CRC
+            bool "Do not decode E2E-protected frames that fail the CRC check"
+            default y
+
+        config S2_LOG_QUEUE_LEN
+            int "Log line queue depth"
+            range 8 512
+            default 96
+            help
+                Log lines are produced by the decoder task and drained by a
+                low-priority writer so a slow or absent USB host never stalls CAN
+                reception. Lines are dropped (and counted) when the queue is full.
+
+    endmenu
+
+    menu "UDS diagnostics polling (transmits on the bus)"
+
+        config S2_UDS_ENABLE
+            bool "Poll diagnostic modules via UDS 0x22 ReadDataByIdentifier"
+            default n
+            depends on !S2_CAN_LISTEN_ONLY
+            help
+                Reads the DIDs of can-db/uds_catalog.json (per-cell voltages, pack
+                current, motor RPM, wheel speeds, charger state, ...) through the
+                BCM gateway. This TRANSMITS on the motorcycle's CAN bus. Only enable
+                once the passive tap has been verified to decode broadcast frames
+                cleanly (no CRC failures, stable frame rates).
+                The requests use the same tester ids (0x7Ex/0x7Dx/0x7F0) as the
+                instrument cluster's own diagnostics polling; the poller backs off
+                for a few seconds whenever it sees another tester's request on the bus.
+
+        config S2_UDS_REQUEST_TIMEOUT_MS
+            int "Response timeout per request (ms)"
+            range 50 5000
+            default 500
+            depends on S2_UDS_ENABLE
+
+        config S2_UDS_INTER_REQUEST_GAP_MS
+            int "Gap between consecutive requests (ms)"
+            range 0 5000
+            default 50
+            depends on S2_UDS_ENABLE
+
+        config S2_UDS_ROUND_PERIOD_MS
+            int "Minimum period of one full pass over the catalog (ms)"
+            range 100 600000
+            default 5000
+            depends on S2_UDS_ENABLE
+
+        config S2_UDS_POLL_TCU
+            bool "Include the telematics module (GPS position, cellular status)"
+            default n
+            depends on S2_UDS_ENABLE
+            help
+                The TCU exposes the live GPS position. Off by default because the
+                data is privacy-sensitive when logs are shared.
+
+        config S2_UDS_LOG_RAW
+            bool "Hex-dump every UDS response"
+            default y
+            depends on S2_UDS_ENABLE
+
+    endmenu
+
+    menu "Status LED"
+
+        config S2_STATUS_LED_ENABLE
+            bool "Drive the on-board WS2812 RGB LED as a bus status indicator"
+            default y
+
+        config S2_STATUS_LED_GPIO
+            int "WS2812 data GPIO"
+            range 0 48
+            default 21
+            depends on S2_STATUS_LED_ENABLE
+            help
+                GPIO21 on the Waveshare ESP32-S3-Zero.
+
+    endmenu
+
+endmenu

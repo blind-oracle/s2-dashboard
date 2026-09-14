@@ -1,0 +1,29 @@
+# Project defaults - applied when sdkconfig.<env> is generated. Edit the generated
+# file (or run `pio run -t menuconfig`) for local tweaks; change this file for
+# defaults everyone should get.
+
+# Waveshare ESP32-S3-Zero: 4 MB flash, 2 MB quad PSRAM, native USB only.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# Console on the USB Serial/JTAG controller (the board has no UART bridge).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# 1 ms tick for timestamp/scheduling granularity.
+CONFIG_FREERTOS_HZ=1000
+
+# Faster code, still with asserts.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# Bigger main task stack (decoder tables + printf).
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+
+# Keep info logs; the logger uses plain printf for data lines.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=n
+
+# TWAI ISR in IRAM for lower latency on a busy 500 kbit/s bus.
+CONFIG_TWAI_ISR_IN_IRAM=y
