@@ -11,6 +11,10 @@ It also drives an **ST7789V2 240x280 IPS display** as a rider-facing gauge: powe
 out and regen, torque, pack voltage, energy used this key cycle and battery state
 of health, with a button to cycle between screens.
 
+The same data goes out over **Bluetooth LE**, so a phone can read it without a
+laptop: a Nordic UART Service that published Android apps display as text with no
+development, and a documented custom GATT service for a purpose-built client.
+
 Firmware: ESP-IDF 5.5 (C), built with PlatformIO. The default configuration is a
 **passive tap** (TWAI listen-only mode, never acknowledges or transmits). Active
 UDS polling of the diagnostic modules through the BCM gateway is implemented but
@@ -197,6 +201,12 @@ board.
 | `S2_DISPLAY_BL_PWM` / `_BRIGHTNESS` | y / 90 | LEDC-dimmed backlight |
 | `S2_DISPLAY_POWER_FULL_SCALE_KW` / `_REGEN_FULL_SCALE_KW` | 70 / 20 | gauge ends |
 | `S2_TORQUE_COUNTS_PER_NM_X100` | 335 | torque scale, hundredths (3.35 counts/Nm) |
+| `S2_BLE_ENABLE` | y | advertise the telemetry services over Bluetooth LE |
+| `S2_BLE_DEVICE_NAME` | `S2-DASH` | name shown in the phone's scan list |
+| `S2_BLE_NUS_ENABLE` | y | also expose the Nordic UART Service (plain text) |
+| `S2_BLE_DASH_HZ` | 5 | dashboard notify rate, 1-20 Hz |
+| `S2_BLE_SNAPSHOT_MS` | 1000 | full-snapshot period |
+| `S2_BLE_TEXT_PERIOD_MS` | 1000 | text digest period on the UART service |
 
 ## What the display shows
 
@@ -382,11 +392,151 @@ diagnostics screen; the poller backs off for a couple of seconds whenever it see
 another tester's request, and negative responses received while another tester
 was active are marked as uncertain in the log.
 
+## Bluetooth LE
+
+The firmware advertises as a BLE peripheral named `S2-DASH`, carrying two
+services at once: the **Nordic UART Service** for apps that already exist, and a
+**custom telemetry service** for an app written against the contract below.
+
+The ESP32-S3 has no Bluetooth Classic radio, so there is no SPP option and the
+bike cannot be paired as a serial port. BLE GATT is the only route, and the
+stack is NimBLE in a peripheral-only role, pinned to core 0 so the CAN decoder
+keeps core 1 to itself.
+
+### Reading it with an app that already exists
+
+No phone-side development is needed for a spot check:
+
+| App | What to use | What you get |
+| --- | --- | --- |
+| nRF Connect for Mobile | generic GATT browser | every service, with each characteristic labelled by its `0x2901` descriptor; subscribe to any of them |
+| nRF Toolbox | the UART module | the `name=value` text digest, and a text box to type commands |
+| Serial Bluetooth Terminal | BLE mode, nRF/micro:bit profile or a custom UUID profile | the same text stream as a scrolling terminal |
+
+The text side sends a short digest once a second rather than all 113 signals,
+because a full dump every second would swamp a terminal. Type `all` for the
+complete set on demand.
+
+### Commands
+
+Write ASCII to either the UART RX characteristic or the custom command
+characteristic. Case does not matter and a trailing CR or LF is ignored.
+
+| Command | Effect |
+| --- | --- |
+| `help`, `?` | list the commands |
+| `info` | firmware version, database version, VIN, uptime |
+| `all` | one-shot text dump of every signal that has been seen |
+| `catalog` | one-shot binary catalog on the stream characteristic |
+| `stream on` / `stream off` | start or stop the periodic text digest |
+| `rate <1-20>` | dashboard notify rate, in Hz |
+
+**Every command only changes what the device reports.** None can leave
+listen-only mode, transmit a CAN frame or start a UDS request, and that boundary
+is deliberate: anyone within radio range can connect.
+
+Text replies (`help`, `info`, `all`) are notified on the UART service, so with
+`S2_BLE_NUS_ENABLE` off a custom client reads the info characteristic and the
+binary stream instead. `catalog` works either way.
+
+### GATT contract
+
+Nordic UART Service, the de-facto text pipe that the apps above look for:
+
+| UUID | Properties | Purpose |
+| --- | --- | --- |
+| `6E400001-B5A3-F393-E0A9-E50E24DCCA9E` | service | |
+| `6E400002-B5A3-F393-E0A9-E50E24DCCA9E` | write, write-without-response | commands to the device |
+| `6E400003-B5A3-F393-E0A9-E50E24DCCA9E` | notify | `name=value` lines, newline separated |
+
+Custom telemetry service, for a purpose-built client:
+
+| UUID | Properties | Purpose |
+| --- | --- | --- |
+| `5332da00-1b2c-4f3e-8a9d-1e0f2a3b4c5d` | service | |
+| `5332da01-...` | read, notify | ride dashboard, fixed 24-byte frame |
+| `5332da02-...` | notify | telemetry stream, fragmented records |
+| `5332da03-...` | write, write-without-response | commands, same grammar as above |
+| `5332da04-...` | read | device info as text |
+
+The service UUID is in the scan response rather than the advertisement, because
+a 128-bit UUID and a name do not both fit in 31 bytes.
+
+Rather than one characteristic per signal, values travel as records inside these
+four. 113 characteristics would mean several hundred attributes to enumerate on
+every connect and a separate subscription write per signal; a record carries the
+same information and the record's index is the signal's index, which is stable
+for a database version and described by the catalog.
+
+**Every multi-byte field is little-endian and floats are IEEE-754 binary32.**
+
+#### Dashboard frame, 24 bytes
+
+| Offset | Type | Field |
+| --- | --- | --- |
+| 0 | u8 | protocol version (currently 1) |
+| 1 | u8 | flags; bit 0 = UDS polling is enabled in this build |
+| 2 | u16 | freshness, 2 bits per field, in the order power, torque, volts, energy, SoH |
+| 4 | f32 | power out of the pack, kW (negative is regen) |
+| 8 | f32 | torque delivered, Nm (an estimate, see below) |
+| 12 | f32 | pack voltage, V |
+| 16 | f32 | energy used this key-on cycle, kWh |
+| 20 | f32 | state of health, % |
+
+Each 2-bit freshness field is 0 for never received, 1 for live and 2 for stale.
+A stale value is the last one known, not a current reading. These are the same
+five values the screen shows, derived by the same rules, so the two cannot
+disagree.
+
+#### Stream fragments
+
+A snapshot of all 113 signals exceeds any ATT MTU, so record messages are split
+across notifications. Every fragment starts with the same 8-byte header:
+
+| Offset | Type | Field |
+| --- | --- | --- |
+| 0 | u8 | protocol version |
+| 1 | u8 | message type: 1 = snapshot, 2 = catalog |
+| 2 | u8 | fragment index, 0-based |
+| 3 | u8 | fragment count |
+| 4 | u16 | records in this fragment |
+| 6 | u16 | sequence number, one per complete message |
+
+Collect fragments 0 to count-1 that share a sequence number; discard the partial
+message if the sequence number changes. At the default 247-byte MTU a snapshot is
+four fragments and the catalog is 29.
+
+A **snapshot record** is 8 bytes: `u16` signal index, `u16` age in deciseconds
+(`0xFFFF` means never seen), `f32` physical value.
+
+A **catalog record** is 56 bytes: `u16` signal index, `u16` CAN identifier,
+`f32` minimum, `f32` maximum, 28 bytes of NUL-padded name, 16 bytes of
+NUL-padded unit. Names and units longer than their field are truncated. Fetch it
+once per connection and a client can label and range any signal without
+compiling the database in.
+
+### Cost
+
+Enabling BLE takes the firmware from about 343 KB to about 754 KB, which is 72%
+of the 1 MiB `factory` partition, and static RAM from about 29.6 KB to about
+42.6 KB. With UDS polling also on it is 74% of the partition.
+
+`CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY` is on: measured here it costs 110 KB of flash
+and gives back 16.8 KB of internal RAM. That is the right way round, because the
+134 KB framebuffer already claims most of the runtime pool, and because running
+out of flash fails the build visibly whereas running out of heap fails at runtime
+inside the BLE stack. If the app partition ever runs out,
+`partitions_singleapp_large.csv` raises it to 1500 KB.
+
+`CONFIG_TWAI_ISR_IN_IRAM` was turned off to make room. It was a latency
+optimisation rather than a requirement; the driver's RX queue absorbs the
+difference at 500 kbit/s.
+
 ## Project layout
 
 ```
 platformio.ini           envs: waveshare_esp32_s3_zero (firmware), native (host tests)
-sdkconfig.defaults       SDK configuration (USB console, 4 MB flash, 1 kHz tick, ...)
+sdkconfig.defaults       SDK configuration (USB console, 4 MB flash, NimBLE, ...)
 can-db/                  vendored database (DBC + UDS catalog, CC BY 4.0)
 tools/dbc2c.py           DBC -> src/gen/s2_dbc_gen.[ch]
 tools/uds2c.py           UDS catalog -> src/gen/s2_uds_gen.[ch]
@@ -404,6 +554,9 @@ src/log_writer.[ch]      non-blocking console writer (ring buffer + task)
 src/uds_client.[ch]      ISO-TP transport + UDS 0x22 poller
 src/uds_decode.[ch]      per-DID interpretation
 src/status_led.[ch]      WS2812 via RMT
+src/ride_limits.h        plausibility/freshness rules shared by the screen and BLE
+src/ble_proto.[ch]       BLE wire formats and command grammar (pure, host-testable)
+src/ble_telemetry.[ch]   NimBLE peripheral: GATT table, advertising, publisher task
 src/display/panel.[ch]   SPI bus, framebuffer, banded DMA flush, backlight
 src/display/gfx.[ch]     RGB565 renderer: shapes, ring gauge, font, 7-segment digits
 src/display/screens.[ch] the screen layouts (pure, host-testable)
@@ -414,6 +567,7 @@ test/sdkconfig.h         host-test stub for the generated sdkconfig
 test/test_decoder/       Unity tests (pio test -e native)
 test/test_gfx/           renderer primitive tests
 test/test_screens/       layout tests: frame bounds, ring clearance, placeholders
+test/test_ble_proto/     wire-format, fragmentation and command-parser tests
 ```
 
 ### Updating the database

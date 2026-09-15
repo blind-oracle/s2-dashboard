@@ -7,6 +7,7 @@
  */
 #include <stdio.h>
 
+#include "ble_telemetry.h"
 #include "can_bus.h"
 #include "decoder.h"
 #include "display.h"
@@ -44,6 +45,11 @@ static const char *TAG = "main";
 #define OPT_UDS 1
 #else
 #define OPT_UDS 0
+#endif
+#ifdef CONFIG_S2_BLE_NUS_ENABLE
+#define OPT_BLE_NUS 1
+#else
+#define OPT_BLE_NUS 0
 #endif
 
 static void update_led(void)
@@ -106,10 +112,17 @@ void app_main(void)
 #else
     log_line("display:  disabled");
 #endif
+#if CONFIG_S2_BLE_ENABLE
+    log_line("ble:      \"%s\", dashboard %d Hz, snapshot %d ms, Nordic UART %s",
+             CONFIG_S2_BLE_DEVICE_NAME, CONFIG_S2_BLE_DASH_HZ, CONFIG_S2_BLE_SNAPSHOT_MS,
+             OPT_BLE_NUS ? "on" : "off");
+#else
+    log_line("ble:      disabled");
+#endif
 
 #if CONFIG_S2_DISPLAY_ENABLE
     /*
-     * Before the CAN queues and task stacks, so the 115 KB framebuffer gets the
+     * Before the CAN queues and task stacks, so the 134 KB framebuffer gets the
      * least fragmented heap. The screen shows its no-data placeholders until the
      * bus comes up.
      */
@@ -119,6 +132,14 @@ void app_main(void)
     if (display_start() != ESP_OK) {
         ESP_LOGE(TAG, "display not started - check the wiring and the S2_DISPLAY_* options");
     }
+#endif
+
+#if CONFIG_S2_BLE_ENABLE
+    if (ble_telemetry_start() != ESP_OK) {
+        ESP_LOGE(TAG, "BLE not started - the CAN log and the screen carry on without it");
+    }
+    log_line("heap:     %u bytes free after BLE init",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 #endif
 
     ESP_ERROR_CHECK(can_bus_start());

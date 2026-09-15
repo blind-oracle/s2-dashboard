@@ -348,16 +348,6 @@ menu "S2 Dashboard (LiveWire S2 CAN logger)"
             default 20
             depends on S2_DISPLAY_ENABLE
 
-        config S2_TORQUE_COUNTS_PER_NM_X100
-            int "Torque scale: counts per Nm, x100"
-            range 50 2000
-            default 335
-            depends on S2_DISPLAY_ENABLE
-            help
-                0x161 carries torque in counts; the database's Nm estimate is
-                3.0-3.7 counts/Nm and is explicitly TENTATIVE, so the displayed Nm
-                value is marked as an estimate. 335 = 3.35 counts/Nm.
-
     endmenu
 
     menu "Status LED"
@@ -373,6 +363,85 @@ menu "S2 Dashboard (LiveWire S2 CAN logger)"
             depends on S2_STATUS_LED_ENABLE
             help
                 GPIO21 on the Waveshare ESP32-S3-Zero.
+
+    endmenu
+
+    menu "Vehicle constants"
+
+        config S2_TORQUE_COUNTS_PER_NM_X100
+            int "Torque scale: counts per Nm, x100"
+            range 50 2000
+            default 335
+            help
+                0x161 carries torque in counts; the database's Nm estimate is
+                3.0-3.7 counts/Nm and is explicitly TENTATIVE, so any reported Nm
+                value is an estimate. 335 = 3.35 counts/Nm.
+
+                Used by both the display and the BLE dashboard frame, so it is
+                not conditional on either.
+
+    endmenu
+
+    menu "BLE telemetry"
+
+        config S2_BLE_ENABLE
+            bool "Publish the decoded data over Bluetooth LE"
+            default y
+            help
+                Advertises as a BLE peripheral carrying two services: the Nordic
+                UART Service, which published Android terminal apps read with no
+                development, and a custom telemetry service for a purpose-built
+                app. See the GATT contract section of README.md.
+
+                The ESP32-S3 has no Bluetooth Classic radio, so there is no SPP
+                option: BLE is the only choice on this chip.
+
+        config S2_BLE_DEVICE_NAME
+            string "Advertised device name"
+            default "S2-DASH"
+            depends on S2_BLE_ENABLE
+            help
+                Shown in the phone's scan list. Keep it short: the name shares a
+                31-byte advertising packet with the flags.
+
+        config S2_BLE_NUS_ENABLE
+            bool "Expose the Nordic UART Service (plain text)"
+            default y
+            depends on S2_BLE_ENABLE
+            help
+                Streams "name=value" lines that nRF Toolbox's UART module, nRF
+                Connect and Serial Bluetooth Terminal can display as they are.
+                Turn this off to save a little RAM when only a custom app will
+                ever connect; the custom service stays available either way.
+
+        config S2_BLE_DASH_HZ
+            int "Dashboard notify rate (Hz)"
+            range 1 20
+            default 5
+            depends on S2_BLE_ENABLE
+            help
+                How often the fixed 24-byte ride frame is notified while a client
+                is subscribed. This is the live-gauge path, so it runs faster than
+                the full snapshot.
+
+        config S2_BLE_SNAPSHOT_MS
+            int "Full snapshot period (ms)"
+            range 200 10000
+            default 1000
+            depends on S2_BLE_ENABLE
+            help
+                How often every database signal is notified as binary records.
+                A snapshot is about 900 bytes, so this is several notifications.
+
+        config S2_BLE_TEXT_PERIOD_MS
+            int "Text line period (ms)"
+            range 200 10000
+            default 1000
+            depends on S2_BLE_ENABLE && S2_BLE_NUS_ENABLE
+            help
+                How often the ride values are sent as text on the UART service.
+                A full "all" dump is sent on request rather than on this timer,
+                because 113 lines would swamp a terminal app.
 
     endmenu
 

@@ -38,7 +38,7 @@ typedef struct {
     double volts;
 
     field_state_t energy_state;
-    double used_kwh;        /* net consumed since boot; may be negative on a charge */
+    double used_kwh;        /* the bike's own key-on trip meter, 0x186, not integrated here */
 
     field_state_t soh_state;
     double soh_pct;

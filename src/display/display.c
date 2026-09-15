@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 #include "log_writer.h"
 #include "panel.h"
+#include "ride_limits.h"
 #include "s2_dbc_gen.h"
 #include "screens.h"
 #include "sdkconfig.h"
@@ -43,29 +44,6 @@ static const char *TAG = "display";
 #define OPT_BRIGHTNESS 100
 #endif
 
-/* Freshness windows: instantaneous values go stale fast, slower frames later. */
-#define STALE_FAST_US    2000000LL
-#define STALE_ENERGY_US  5000000LL     /* 0x186 runs at ~1.8 Hz */
-#define STALE_SOH_US   300000000LL
-
-/*
- * The window a 0x181 pair must fall in to be believable, from the database's
- * notes: ~400 V nominal, sagging to ~300 V at the 240 A peak, and charging never
- * more than a few tens of amps. Outside this is a decode error, not a reading.
- */
-#define V_MIN 200.0
-#define V_MAX 430.0
-#define I_MIN (-400.0)
-#define I_MAX 50.0
-
-static inline bool pack_sample_plausible(double volts, double amps)
-{
-    return volts >= V_MIN && volts <= V_MAX && amps >= I_MIN && amps <= I_MAX;
-}
-
-/* Torque outside this is a decode error, not a reading (observed -280..+1249). */
-#define TORQUE_ABS_MAX 1500.0
-
 /*
  * The button is polled from the render loop, whose period is the tick plus
  * however long rendering and the (synchronous) flush took. All button timing is
@@ -73,8 +51,6 @@ static inline bool pack_sample_plausible(double volts, double amps)
  */
 #define TICK_MS 10
 #define DEBOUNCE_US 30000LL
-
-#define TORQUE_PER_NM ((double)CONFIG_S2_TORQUE_COUNTS_PER_NM_X100 / 100.0)
 
 static unsigned s_screen;
 static double s_power_filt;
@@ -157,14 +133,6 @@ static void button_poll(void) {}
 
 /* ---------------------------------------------------------------- sampling --- */
 
-static field_state_t freshness(bool valid, int64_t ts_us, int64_t now, int64_t window)
-{
-    if (!valid) {
-        return FIELD_MISSING;
-    }
-    return (now - ts_us) > window ? FIELD_STALE : FIELD_LIVE;
-}
-
 /* First-order low-pass, so the digits do not churn on sensor noise. */
 static double filter(double *state, bool *have, double raw, double dt_s, double tau_s)
 {
@@ -210,13 +178,13 @@ static void snapshot(dash_data_t *d, int64_t now, double dt_s)
      * One plausibility rule for the gauge and the accumulator, so they can never
      * disagree about whether a sample was real.
      */
-    bool pair_ok = sv && si && sv->valid && si->valid && pack_sample_plausible(volts, amps);
+    bool pair_ok = sv && si && sv->valid && si->valid && ride_pack_sample_plausible(volts, amps);
     v_ok = pair_ok;
     i_ok = pair_ok;
     if (st && st->valid) {
         torque_counts = st->value;
         t_ts = st->ts_us;
-        t_ok = torque_counts >= -TORQUE_ABS_MAX && torque_counts <= TORQUE_ABS_MAX;
+        t_ok = ride_torque_plausible(torque_counts);
     }
     if (se && se->valid) {
         used_wh = se->value;          /* the bike's own trip meter, ~1 Wh/count */
@@ -229,28 +197,27 @@ static void snapshot(dash_data_t *d, int64_t now, double dt_s)
     soh_ts = u->soh_ts_us;
     vs_unlock();
 
-    /* Power: the pack current is charge-positive, so power out is -(V * I). */
     bool power_ok = v_ok && i_ok;
     int64_t power_ts = v_ts < i_ts ? v_ts : i_ts;
-    d->power_state = freshness(power_ok, power_ts, now, STALE_FAST_US);
+    d->power_state = ride_freshness(power_ok, power_ts, now, RIDE_STALE_FAST_US);
     if (power_ok) {
-        double raw_kw = -(volts * amps) / 1000.0;
+        double raw_kw = ride_power_kw(volts, amps);
         d->power_kw = filter(&s_power_filt, &s_power_filt_valid, raw_kw, dt_s, 0.2);
     }
 
-    d->torque_state = freshness(t_ok, t_ts, now, STALE_FAST_US);
+    d->torque_state = ride_freshness(t_ok, t_ts, now, RIDE_STALE_FAST_US);
     if (t_ok) {
         d->torque_counts = filter(&s_torque_filt, &s_torque_filt_valid, torque_counts, dt_s, 0.1);
-        d->torque_nm = d->torque_counts / TORQUE_PER_NM;
+        d->torque_nm = ride_torque_nm(d->torque_counts);
     }
 
-    d->volts_state = freshness(v_ok, v_ts, now, STALE_FAST_US);
+    d->volts_state = ride_freshness(v_ok, v_ts, now, RIDE_STALE_FAST_US);
     d->volts = volts;
 
-    d->energy_state = freshness(energy_seen, energy_ts, now, STALE_ENERGY_US);
+    d->energy_state = ride_freshness(energy_seen, energy_ts, now, RIDE_STALE_ENERGY_US);
     d->used_kwh = used_wh / 1000.0;
 
-    d->soh_state = freshness(soh_ok, soh_ts, now, STALE_SOH_US);
+    d->soh_state = ride_freshness(soh_ok, soh_ts, now, RIDE_STALE_SOH_US);
     d->soh_pct = soh;
 }
 

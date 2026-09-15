@@ -25,5 +25,42 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_COLORS=n
 
-# TWAI ISR in IRAM for lower latency on a busy 500 kbit/s bus.
-CONFIG_TWAI_ISR_IN_IRAM=y
+# The BLE controller needs the IRAM this was holding, and the TWAI ISR in IRAM
+# is a latency optimisation rather than a requirement: the driver's RX queue
+# absorbs the difference at 500 kbit/s.
+CONFIG_TWAI_ISR_IN_IRAM=n
+
+# Bluetooth LE. The ESP32-S3 has no Bluetooth Classic radio, so BLE is the only
+# option; NimBLE is roughly half of Bluedroid's footprint and this is a
+# peripheral-only role.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=n
+
+# Peripheral and broadcaster only: no scanning, no central role.
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+
+# One phone at a time. A 247-byte MTU carries 29 snapshot records per
+# notification, so a full 113-signal snapshot takes four.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
+
+# No bonding: the service is read-only telemetry and the command channel cannot
+# reach the CAN bus, so there is nothing to protect and no NVS writes at runtime.
+CONFIG_BT_NIMBLE_NVS_PERSIST=n
+
+# Keep core 1 free for the CAN decoder task.
+CONFIG_BT_CTRL_PINNED_TO_CORE_0=y
+CONFIG_BT_NIMBLE_PINNED_TO_CORE_0=y
+
+# Moves the controller out of ROM and IRAM into flash. Measured on this project:
+# 16.8 KB less DIRAM (110.3 KB vs 127.1 KB used) for 110 KB more flash (754 KB
+# vs 643 KB). Worth it because runtime DIRAM is the scarce resource once the
+# 134 KB framebuffer is allocated, and because running out of flash fails the
+# build visibly, with partitions_singleapp_large.csv as the fix, whereas running
+# out of heap fails at runtime inside the BLE stack. The documented caveat is
+# degraded Bluetooth while flash is being erased, which this firmware never does.
+CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY=y
