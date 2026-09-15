@@ -149,6 +149,217 @@ menu "S2 Dashboard (LiveWire S2 CAN logger)"
 
     endmenu
 
+    menu "Display (ST7789 240x280 LCD)"
+
+        config S2_DISPLAY_ENABLE
+            bool "Drive an ST7789 240x280 IPS panel over SPI"
+            default y
+            help
+                Renders the gathered CAN data on a 240x280 LCD (the common 1.69"
+                ST7789V2 module). Driven through ESP-IDF's in-tree esp_lcd ST7789
+                driver, with no Arduino / TFT_eSPI dependency.
+
+        config S2_DISPLAY_SPI_HOST
+            int "SPI host (2 = SPI2/FSPI, 3 = SPI3)"
+            range 2 3
+            default 2
+            depends on S2_DISPLAY_ENABLE
+
+        config S2_DISPLAY_SCLK_GPIO
+            int "SCLK GPIO"
+            range 0 48
+            default 12
+            depends on S2_DISPLAY_ENABLE
+            help
+                GPIO12 and GPIO11 are the SPI2 native pins on this chip, so they
+                take the fast IO_MUX path.
+                Do NOT use: 0 (BOOT), 3/45/46 (strapping), 19/20 (USB),
+                21 (on-board LED), 26-37 (flash/PSRAM), 43/44 (UART0),
+                22-25 (do not exist on the ESP32-S3), or the CAN pins.
+
+        config S2_DISPLAY_MOSI_GPIO
+            int "MOSI / DIN GPIO"
+            range 0 48
+            default 11
+            depends on S2_DISPLAY_ENABLE
+            help
+                GPIO12 and GPIO11 are the SPI2 native pins on this chip, so they
+                take the fast IO_MUX path.
+                Do NOT use: 0 (BOOT), 3/45/46 (strapping), 19/20 (USB),
+                21 (on-board LED), 26-37 (flash/PSRAM), 43/44 (UART0),
+                22-25 (do not exist on the ESP32-S3), or the CAN pins.
+
+        config S2_DISPLAY_CS_GPIO
+            int "CS GPIO (-1 if the panel is the only device and CS is grounded)"
+            range -1 48
+            default 10
+            depends on S2_DISPLAY_ENABLE
+
+        config S2_DISPLAY_DC_GPIO
+            int "DC / RS GPIO"
+            range 0 48
+            default 9
+            depends on S2_DISPLAY_ENABLE
+            help
+                Data/command select.
+                Do NOT use: 0 (BOOT), 3/45/46 (strapping), 19/20 (USB),
+                21 (on-board LED), 26-37 (flash/PSRAM), 43/44 (UART0),
+                22-25 (do not exist on the ESP32-S3), or the CAN pins.
+
+        config S2_DISPLAY_RST_GPIO
+            int "RST GPIO (-1 if tied to the board reset)"
+            range -1 48
+            default 8
+            depends on S2_DISPLAY_ENABLE
+
+        config S2_DISPLAY_BL_GPIO
+            int "Backlight GPIO (-1 if hardwired on)"
+            range -1 48
+            default 7
+            depends on S2_DISPLAY_ENABLE
+
+        config S2_DISPLAY_BL_PWM
+            bool "Dim the backlight with LEDC PWM"
+            default y
+            depends on S2_DISPLAY_ENABLE && S2_DISPLAY_BL_GPIO >= 0
+
+        config S2_DISPLAY_BRIGHTNESS
+            int "Backlight brightness (%)"
+            range 1 100
+            default 90
+            depends on S2_DISPLAY_BL_PWM
+
+        config S2_DISPLAY_SPI_HZ
+            int "SPI clock (Hz)"
+            range 1000000 62000000
+            default 40000000
+            depends on S2_DISPLAY_ENABLE
+            help
+                40 MHz is what the module vendor's own examples use and is reliable
+                on short wiring. The ST7789V2 datasheet write cycle tops out at
+                62.5 MHz. Lower it to 20 MHz if the image shows torn pixels.
+
+        config S2_DISPLAY_ROTATE_180
+            bool "Turn the image upside down"
+            default n
+            depends on S2_DISPLAY_ENABLE
+            help
+                For mounting the module the other way up. Only 0 and 180 degrees
+                are offered: the framebuffer and the screen layout are 240 wide by
+                280 tall, so a 90 degree turn would need both transposed.
+
+        config S2_DISPLAY_X_GAP
+            int "Column offset into the controller's frame memory"
+            range 0 80
+            default 0
+            depends on S2_DISPLAY_ENABLE
+            help
+                The ST7789 has 240x320 of frame memory and a 240x280 panel shows
+                rows 20..299 of it, so the defaults are 0 and 20. Change these only
+                if your module shows the image shifted by a constant number of
+                pixels, or wraps a band from the opposite edge.
+
+        config S2_DISPLAY_Y_GAP
+            int "Row offset into the controller's frame memory"
+            range 0 80
+            default 20
+            depends on S2_DISPLAY_ENABLE
+
+        config S2_DISPLAY_MIRROR_X
+            bool "Mirror horizontally (on top of the rotation)"
+            default n
+            depends on S2_DISPLAY_ENABLE
+            help
+                Some modules ship mirrored relative to the usual orientation.
+                Turn this on if the image is a left-right mirror of what it
+                should be.
+
+        config S2_DISPLAY_MIRROR_Y
+            bool "Mirror vertically (on top of the rotation)"
+            default n
+            depends on S2_DISPLAY_ENABLE
+
+        config S2_DISPLAY_INVERT_COLOR
+            bool "Invert colours (needed by ST7789 IPS panels)"
+            default y
+            depends on S2_DISPLAY_ENABLE
+            help
+                These IPS panels ship needing display inversion on, and ESP-IDF's
+                driver does not send it by itself. Turn this off only if the image
+                looks like a photographic negative.
+
+        config S2_DISPLAY_BGR
+            bool "Panel expects BGR element order"
+            default n
+            depends on S2_DISPLAY_ENABLE
+            help
+                The 1.69" ST7789V2 modules are RGB, so this is off by default.
+                Turn it on if red and blue are swapped.
+
+        config S2_DISPLAY_REFRESH_HZ
+            int "Screen refresh rate (Hz)"
+            range 1 30
+            default 10
+            depends on S2_DISPLAY_ENABLE
+
+        config S2_DISPLAY_BAND_ROWS
+            int "Rows per SPI transfer when flushing the framebuffer"
+            range 8 280
+            default 40
+            depends on S2_DISPLAY_ENABLE
+            help
+                The framebuffer is pushed in horizontal bands to bound the size of a
+                single DMA transfer. 40 rows = 19200 bytes per transfer.
+
+        config S2_DISPLAY_SCREENS
+            int "Number of screens the button cycles through"
+            range 1 8
+            default 4
+            depends on S2_DISPLAY_ENABLE
+            help
+                Screen 1 shows the ride data; the rest are placeholders for now.
+
+        config S2_DISPLAY_BUTTON_GPIO
+            int "Screen button GPIO (-1 to disable)"
+            range -1 48
+            default 6
+            depends on S2_DISPLAY_ENABLE
+            help
+                Wire a momentary switch between this pin and GND; the internal
+                pull-up is enabled. Short press cycles screens, long press (1 s)
+                resets the session energy counter.
+
+        config S2_DISPLAY_BUTTON_ACTIVE_LOW
+            bool "Button pulls the pin low when pressed"
+            default y
+            depends on S2_DISPLAY_ENABLE && S2_DISPLAY_BUTTON_GPIO >= 0
+
+        config S2_DISPLAY_POWER_FULL_SCALE_KW
+            int "Power gauge full scale (kW)"
+            range 5 200
+            default 70
+            depends on S2_DISPLAY_ENABLE
+            help
+                The S2 peaks near 69 kW on discharge.
+
+        config S2_DISPLAY_REGEN_FULL_SCALE_KW
+            int "Regen gauge full scale (kW)"
+            range 1 100
+            default 20
+            depends on S2_DISPLAY_ENABLE
+
+        config S2_TORQUE_COUNTS_PER_NM_X100
+            int "Torque scale: counts per Nm, x100"
+            range 50 2000
+            default 335
+            depends on S2_DISPLAY_ENABLE
+            help
+                0x161 carries torque in counts; the database's Nm estimate is
+                3.0-3.7 counts/Nm and is explicitly TENTATIVE, so the displayed Nm
+                value is marked as an estimate. 335 = 3.35 counts/Nm.
+
+    endmenu
+
     menu "Status LED"
 
         config S2_STATUS_LED_ENABLE

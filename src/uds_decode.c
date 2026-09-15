@@ -4,8 +4,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_timer.h"
 #include "log_writer.h"
 #include "sdkconfig.h"
+#include "vehicle_state.h"
 
 static uint16_t be16(const uint8_t *p) { return (uint16_t)((p[0] << 8) | p[1]); }
 static uint32_t be32(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
@@ -234,10 +236,23 @@ static bool decode_specific(const s2_uds_module_t *m, const s2_uds_did_t *d, con
             return true;
         }
         if (d->did == 0x0213 && n >= 2) {
+            vs_lock();
+            vs_uds_t *u = vs_uds();
+            u->fine_soc_valid = true;
+            u->fine_soc_pct = be16(p) / 100.0;
+            u->fine_soc_ts_us = esp_timer_get_time();
+            vs_unlock();
             snprintf(out, outlen, "fine SoC/SoE %.2f %% (voltage-instantaneous, ~18-22 pts above display SoC)", be16(p) / 100.0);
             return true;
         }
         if (d->did == 0x020E && n >= 1) {
+            /* The only state-of-health source on the bike; the dashboard reads it from here. */
+            vs_lock();
+            vs_uds_t *u = vs_uds();
+            u->soh_valid = true;
+            u->soh_pct = (double)p[0];
+            u->soh_ts_us = esp_timer_get_time();
+            vs_unlock();
             snprintf(out, outlen, "SoH-like %u %%", p[0]);
             return true;
         }

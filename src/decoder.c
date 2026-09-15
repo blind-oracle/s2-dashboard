@@ -190,7 +190,7 @@ void decoder_handle_frame(const can_frame_t *f)
             }
 #endif
         }
-        s2_overlay_on_frame(msg, f);
+        s2_overlay_on_frame(msg, f, !crc_bad);
     }
     uint32_t crc_fail_total = ms->crc_fail;
     uint32_t gaps_total = ms->alive.gaps;

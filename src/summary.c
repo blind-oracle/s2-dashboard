@@ -161,7 +161,8 @@ static void print_summary(int64_t now)
     add_sig(&l, "pack", S2_SIG_BATTERY_STATUS_181_pack_voltage);
     add_sig(&l, "current", S2_SIG_BATTERY_STATUS_181_pack_current);
     if (vv && iv) {
-        line_add(&l, "  power=%.2f kW", v * i / 1000.0);
+        /* Pack current is charge-positive, so power OUT of the pack is -(V * I). */
+        line_add(&l, "  power_out=%.2f kW", -(v * i) / 1000.0);
     }
     add_sig(&l, "packV_163", S2_SIG_BATTERY_POWER_163_pack_voltage_163);
     add_sig(&l, "cell_min", S2_SIG_CELL_VOLTAGE_182_cell_v_min);

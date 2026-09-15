@@ -51,6 +51,20 @@ typedef struct {
     uint8_t vin_parts;      /* bitmask of received parts */
 } vs_derived_t;
 
+/*
+ * Values that exist only over UDS (not broadcast), stored so the display can
+ * show them. Populated by src/uds_decode.c, which runs only when
+ * CONFIG_S2_UDS_ENABLE is on; everything stays invalid otherwise.
+ */
+typedef struct {
+    bool soh_valid;         /* RESS DID 0x020E, "SoH-like reference" */
+    double soh_pct;
+    int64_t soh_ts_us;
+    bool fine_soc_valid;    /* RESS DID 0x0213, internal fine SoC/SoE */
+    double fine_soc_pct;
+    int64_t fine_soc_ts_us;
+} vs_uds_t;
+
 void vs_init(void);
 void vs_lock(void);
 void vs_unlock(void);
@@ -59,6 +73,7 @@ void vs_unlock(void);
 vs_signal_t *vs_signal(uint16_t index);            /* index < S2_SIG__COUNT */
 vs_message_t *vs_message(uint16_t message_index);  /* index < s2_dbc_message_count */
 vs_derived_t *vs_derived(void);
+vs_uds_t *vs_uds(void);
 
 /* Record a decoded signal; returns true when the value changed. */
 bool vs_update_signal(uint16_t index, uint64_t raw, double value, int64_t ts_us);

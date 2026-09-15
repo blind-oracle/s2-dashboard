@@ -32,8 +32,12 @@ bool s2_overlay_suppress_change_log(uint16_t signal_index);
  * Frame-level hook, called by the decoder (holding the vehicle-state lock)
  * after the plain DBC signals were extracted. Handles multiplexed payloads,
  * comment-only fields and derived values; logs its own change lines.
+ *
+ * e2e_ok is false when the frame is E2E-protected and failed its CRC. Derived
+ * values that accumulate (the energy meter) must never take an unverified
+ * frame, whatever the logging options say about decoding one.
  */
-void s2_overlay_on_frame(const s2_message_def_t *msg, const can_frame_t *frame);
+void s2_overlay_on_frame(const s2_message_def_t *msg, const can_frame_t *frame, bool e2e_ok);
 
 /* Formats the overlay's summary lines (mux temperatures, VIN, ...). Lock held. */
 void s2_overlay_summary(int64_t now_us);

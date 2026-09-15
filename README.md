@@ -7,6 +7,10 @@ community [livewire-s2-can-db](https://github.com/inklit/livewire-s2-can-db) dat
 and logs the result over the board's USB serial port. This is the data-gathering
 stage of a future dashboard.
 
+It also drives an **ST7789V2 240x280 IPS display** as a rider-facing gauge: power
+out and regen, torque, pack voltage, energy used this key cycle and battery state
+of health, with a button to cycle between screens.
+
 Firmware: ESP-IDF 5.5 (C), built with PlatformIO. The default configuration is a
 **passive tap** (TWAI listen-only mode, never acknowledges or transmits). Active
 UDS polling of the diagnostic modules through the BCM gateway is implemented but
@@ -20,10 +24,23 @@ off by default.
 |---|---|---|
 | CAN TX (to MCP2551 TXD, pin 1) | **GPIO4** | left header, no strapping/on-board function |
 | CAN RX (from MCP2551 RXD, pin 4) | **GPIO5** | **through a resistor divider**, see below |
+| Display SCLK | **GPIO12** | SPI2 (FSPI) native pin, fast IO_MUX path |
+| Display MOSI / DIN | **GPIO11** | SPI2 native pin |
+| Display CS | **GPIO10** | SPI2 native pin |
+| Display DC / RS | **GPIO9** | |
+| Display RST | **GPIO8** | set to -1 if tied to the board reset |
+| Display BL | **GPIO7** | PWM dimmed; -1 if hardwired on |
+| Screen button | **GPIO6** | to GND, internal pull-up |
 | Status LED | GPIO21 | on-board WS2812, already wired |
 | Console | USB-C | native USB Serial/JTAG, no UART bridge on this board |
 
-Both CAN pins are configurable in `menuconfig` (S2 Dashboard menu); any free GPIO works.
+Every pin is configurable in `menuconfig` (S2 Dashboard menu). The six display
+signals are a contiguous run on the right-hand header (GP12 down to GP7), which
+suits a ribbon; note the header has only one GND and one 3V3 pad, both at the top
+of the *left* row, so power and the button return need their own leads.
+
+Avoid for any of these: GPIO0 (BOOT), 3/45/46 (strapping), 19/20 (USB),
+21 (on-board LED), 26-37 (flash/PSRAM), 43/44 (UART0), and 22-25 (do not exist).
 
 ### MCP2551 on a 3.3 V MCU
 
@@ -60,6 +77,58 @@ Notes:
 
 A 3.3 V-IO transceiver (MCP2562 with VIO=3V3, TJA1051T/3, SN65HVD230) removes the
 need for the divider.
+
+### ST7789 display
+
+A 240x280 IPS module with an ST7789V2 controller (the common 1.69" one), on SPI2:
+
+```
+Module        ESP32-S3-Zero
+VCC   ------> 3V3
+GND   ------> GND
+DIN   ------> GPIO11   (MOSI)
+CLK   ------> GPIO12   (SCLK)
+CS    ------> GPIO10
+DC    ------> GPIO9
+RST   ------> GPIO8
+BL    ------> GPIO7    (PWM dimmed; tie to 3V3 and set the option to -1 instead)
+
+Button: GPIO6 ------ switch ------ GND     (internal pull-up; no external parts needed,
+                                            though 10 k + 100 nF is wise in a vehicle)
+```
+
+The module is 3.3 V logic and 3.3 V supply, so unlike the CAN transceiver it needs
+no level shifting. Keep the SPI leads short; drop `S2_DISPLAY_SPI_HZ` to 20 MHz if
+the image tears.
+
+**Why not TFT_eSPI.** TFT_eSPI is an Arduino library and this is a plain ESP-IDF
+project, so using it would mean pulling the whole Arduino core in as an ESP-IDF
+component. ESP-IDF ships an ST7789 panel driver in-tree, so `src/display/panel.c`
+uses that directly over DMA with no extra dependency. The V2 variant needs no
+vendor register additions: the module maker's own ESP-IDF example drives this
+glass with the stock driver and nothing else.
+
+**The row offset matters.** The ST7789 has 240x320 of frame memory and this panel
+shows rows 20 to 299 of it, so the firmware sets a gap of 0, 20. Those 280 rows
+sit in the *middle* of the memory, which is why the offset stays 20 when the
+image is turned upside down, unlike the end-justified 240x240 panels where it
+moves between 80 and 0.
+
+**If the image looks wrong**, one option fixes each symptom:
+
+| Symptom | Option |
+|---|---|
+| Photographic negative | `S2_DISPLAY_INVERT_COLOR` (default y) |
+| Red and blue swapped | `S2_DISPLAY_BGR` (default y) |
+| Upside down | `S2_DISPLAY_ROTATE_180` |
+| Shifted by a constant number of pixels, or a band wrapped from the far edge | `S2_DISPLAY_X_GAP` / `_Y_GAP` (0 and 20 here) |
+| Mirrored left-right or top-bottom | `S2_DISPLAY_MIRROR_X` / `_MIRROR_Y` (some modules ship mirrored; rotation alone cannot fix that) |
+| Torn, shifted or noisy pixels | lower `S2_DISPLAY_SPI_HZ` |
+| Nothing at all | check DC and RST, then CS; the backlight stays dark until the first frame is drawn |
+
+The module's backlight is active high and its logic is 3.3 V, matching the board.
+The datasheet write cycle allows up to 62.5 MHz; the vendor's own examples use
+40 MHz, which is the default here.
 
 ## Building and flashing
 
@@ -113,6 +182,84 @@ board.
 | `S2_UDS_POLL_TCU` | n | include the telematics module (GPS position) |
 | `S2_UDS_LOG_RAW` | y | hex-dump UDS responses |
 | `S2_STATUS_LED_ENABLE` / `_GPIO` | y / 21 | WS2812 status LED |
+| `S2_DISPLAY_ENABLE` | y | drive the ST7789 panel |
+| `S2_DISPLAY_SPI_HOST` | 2 | SPI2 (FSPI); host 3 has no fast pins on the S3 |
+| `S2_DISPLAY_SCLK_GPIO` / `_MOSI_GPIO` / `_CS_GPIO` / `_DC_GPIO` / `_RST_GPIO` / `_BL_GPIO` | 12 / 11 / 10 / 9 / 8 / 7 | panel pins; CS, RST and BL accept -1 |
+| `S2_DISPLAY_SPI_HZ` | 40000000 | pixel clock, 62.5 MHz ceiling |
+| `S2_DISPLAY_ROTATE_180` | n | turn the image upside down |
+| `S2_DISPLAY_X_GAP` / `_Y_GAP` | 0 / 20 | offset into the 240x320 frame memory |
+| `S2_DISPLAY_INVERT_COLOR` / `_BGR` | y / y | colour fixes, see the table above |
+| `S2_DISPLAY_MIRROR_X` / `_MIRROR_Y` | n / n | extra mirroring on top of the rotation |
+| `S2_DISPLAY_REFRESH_HZ` | 10 | full-frame redraw rate |
+| `S2_DISPLAY_BAND_ROWS` | 40 | rows per SPI transfer |
+| `S2_DISPLAY_SCREENS` | 4 | screens the button cycles through |
+| `S2_DISPLAY_BUTTON_GPIO` / `_ACTIVE_LOW` | 6 / y | screen button; -1 disables |
+| `S2_DISPLAY_BL_PWM` / `_BRIGHTNESS` | y / 90 | LEDC-dimmed backlight |
+| `S2_DISPLAY_POWER_FULL_SCALE_KW` / `_REGEN_FULL_SCALE_KW` | 70 / 20 | gauge ends |
+| `S2_TORQUE_COUNTS_PER_NM_X100` | 335 | torque scale, hundredths (3.35 counts/Nm) |
+
+## What the display shows
+
+**Screen 1 (ride screen)** shows all five quantities at once:
+
+| Element | Source | Notes |
+|---|---|---|
+| Ring gauge + large number, kW | pack voltage x pack current (0x181) | positive = power out to the motor (amber, red above 45 kW), negative = regen (green, fills the other way from the white zero mark) |
+| `nnn ~Nm` | 0x161 `torque_delivered` | the `~` marks it as an estimate, see the caveat below |
+| `nnn.n Vdc` | 0x181 `pack_voltage` | 12-bit word, 1 V/count |
+| `nn.nn kWh` | 0x186 `trip_energy_consumed_wh` | the bike's own trip meter: energy used since **key-on**, which it also zeroes at each key cycle and clamps at 0 while charging |
+| `SOH nn%` | UDS RESS DID 0x020E | UDS-only, see the caveat below |
+
+Below the rows, one dot per screen marks where you are. **Screens 2 to 4 are
+deliberately empty** placeholders (`SCREEN 2 / (empty)`) for future content.
+
+**The button** on GPIO6 cycles screens on release, and the new screen is noted in
+the serial log.
+
+**Missing and stale data are visually distinct**, because a dashboard that
+invents numbers is worse than one that admits it cannot read them:
+
+- **Never seen** shows dashes in the dimmest grey (`---`, `----`, `---.-`,
+  `--.--`) with the unit dimmed too, and the ring draws no fill at all. Dashes,
+  never zeros: `0.0 kW` is a legitimate reading.
+- **Gone stale** (older than 2 s, or 5 s for the slower energy frame) keeps the last
+  value but greys it, the ring redraws dim at the last angle, and the header word
+  changes from `POWER` to `STALE` - the only text on screen that changes wording.
+- **State of health** reads `SOH n/a` when UDS polling is off (the normal
+  passive-tap build) and `SOH --%` when it is on but the battery has not answered
+  yet, so the two reasons are distinguishable.
+
+### Why torque is an estimate
+
+The database gives torque in raw counts and brackets the scale at 3.0-3.7
+counts/Nm, but that bracket was anchored on the peak torque *request*; the later
+peak *delivered* figure implies about 4.4 counts/Nm. Real uncertainty is roughly
+plus or minus 30-40%, so the firmware prints the Nm value with a leading `~` and
+`S2_TORQUE_COUNTS_PER_NM_X100` is adjustable. Only a dyno or an OEM figure will
+settle it.
+
+### Why state of health needs UDS
+
+Searching the whole database for a broadcast SoH signal comes up empty: the
+battery management system is on the *primary* bus and the secondary bus carries
+no health figure. The only source is UDS RESS DID 0x020E, which the database
+itself labels "SoH-*like*" (it held 97% while the displayed charge ran from 100%
+down to 22%, which proves it is not a charge reading but does not prove it is
+health). Reading it **transmits on the motorcycle's bus**, so it appears only
+with `S2_UDS_ENABLE` on. In the default passive build the field reads `SOH n/a`.
+
+### Cost
+
+The framebuffer is one 134,400-byte DMA-capable allocation (240 x 280 x 16 bpp).
+It is taken before the CAN queues and task stacks so it gets the least
+fragmented heap, and the boot banner prints the free and largest-block figures
+next to it so the real margin is visible on your board. A full frame is 27 ms of
+SPI DMA at 40 MHz, so the default 10 Hz refresh keeps the bus about 27% busy and
+costs the CPU only the few milliseconds of rendering. The display task runs on
+core 0 at a low priority; CAN decoding stays on core 1.
+
+The panel is brought up before the CAN bus, so the screen shows its placeholder
+dashes from the first moment rather than staying dark until traffic arrives.
 
 ## What the log looks like
 
@@ -257,8 +404,16 @@ src/log_writer.[ch]      non-blocking console writer (ring buffer + task)
 src/uds_client.[ch]      ISO-TP transport + UDS 0x22 poller
 src/uds_decode.[ch]      per-DID interpretation
 src/status_led.[ch]      WS2812 via RMT
+src/display/panel.[ch]   SPI bus, framebuffer, banded DMA flush, backlight
+src/display/gfx.[ch]     RGB565 renderer: shapes, ring gauge, font, 7-segment digits
+src/display/screens.[ch] the screen layouts (pure, host-testable)
+src/display/display.[ch] render task, data snapshot, screen button
+tools/mkfont.py          5x7 font -> src/gen/s2_font5x7.[ch] (original artwork)
 src/Kconfig.projbuild    menuconfig options
+test/sdkconfig.h         host-test stub for the generated sdkconfig
 test/test_decoder/       Unity tests (pio test -e native)
+test/test_gfx/           renderer primitive tests
+test/test_screens/       layout tests: frame bounds, ring clearance, placeholders
 ```
 
 ### Updating the database

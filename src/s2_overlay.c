@@ -552,7 +552,7 @@ static void track_uncovered(const s2_message_def_t *msg, const can_frame_t *f)
     log_tline("0x%03X %s: undocumented bytes %s%s", msg->id, msg->name, txt, first ? " (first)" : "");
 }
 
-void s2_overlay_on_frame(const s2_message_def_t *msg, const can_frame_t *f)
+void s2_overlay_on_frame(const s2_message_def_t *msg, const can_frame_t *f, bool e2e_ok)
 {
     if (!s_masks_ready) {
         build_masks();

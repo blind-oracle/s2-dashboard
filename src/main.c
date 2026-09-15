@@ -9,7 +9,9 @@
 
 #include "can_bus.h"
 #include "decoder.h"
+#include "display.h"
 #include "esp_app_desc.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -96,6 +98,28 @@ void app_main(void)
              OPT_RAW_LOG ? "on" : "off", OPT_CHANGE_LOG ? "on" : "off",
              OPT_CHANGE_MIN_MS, CONFIG_S2_SUMMARY_PERIOD_MS,
              OPT_UDS ? "ENABLED" : "off");
+#if CONFIG_S2_DISPLAY_ENABLE
+    log_line("display:  ST7789 240x280, SCLK%d MOSI%d CS%d DC%d RST%d BL%d, %d Hz refresh, %d screens, button GPIO%d",
+             CONFIG_S2_DISPLAY_SCLK_GPIO, CONFIG_S2_DISPLAY_MOSI_GPIO, CONFIG_S2_DISPLAY_CS_GPIO,
+             CONFIG_S2_DISPLAY_DC_GPIO, CONFIG_S2_DISPLAY_RST_GPIO, CONFIG_S2_DISPLAY_BL_GPIO,
+             CONFIG_S2_DISPLAY_REFRESH_HZ, CONFIG_S2_DISPLAY_SCREENS, CONFIG_S2_DISPLAY_BUTTON_GPIO);
+#else
+    log_line("display:  disabled");
+#endif
+
+#if CONFIG_S2_DISPLAY_ENABLE
+    /*
+     * Before the CAN queues and task stacks, so the 115 KB framebuffer gets the
+     * least fragmented heap. The screen shows its no-data placeholders until the
+     * bus comes up.
+     */
+    log_line("heap:     %u bytes free, largest DMA-capable block %u bytes",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+    if (display_start() != ESP_OK) {
+        ESP_LOGE(TAG, "display not started - check the wiring and the S2_DISPLAY_* options");
+    }
+#endif
 
     ESP_ERROR_CHECK(can_bus_start());
 
