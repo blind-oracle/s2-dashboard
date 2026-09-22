@@ -635,11 +635,25 @@ are wireless. The layout:
 540 KB of the 4 MB part is left spare. The image is about 1.19 MB with Wi-Fi
 compiled in, which is 70% of a slot.
 
-The table is selected by `board_build.partitions` in `platformio.ini`, **not** by
-the Kconfig partition option. The PlatformIO ESP-IDF builder reads the former and
+Two `platformio.ini` lines make this work, and both are needed. The table is
+selected by `board_build.partitions`, **not** by the Kconfig partition option. The PlatformIO ESP-IDF builder reads the former and
 ignores the latter, taking only `PARTITION_TABLE_OFFSET` from sdkconfig. Both are
 set so menuconfig tells the truth, but only the `platformio.ini` line has any
 effect.
+
+The second line is `upload_command`, with `tools/pio_app_offset.py` behind it.
+The platform computes the app's flash offset incorrectly on the upload path and
+passes 0x10000, the single-app default. On a two-slot table 0x10000 is inside
+`otadata`, so esptool refuses the whole write:
+
+```
+Detected overlap at address: 0x10000 for file: firmware.bin
+```
+
+The script reads the real offset out of the partition CSV and `upload_command`
+passes it through. Both can go once the platform is fixed. If you ever see that
+error again, check what offset the script prints during a build against `ota_0`
+in the table.
 
 ### Doing an update
 
@@ -707,6 +721,7 @@ tools/dbc2c.py           DBC -> src/gen/s2_dbc_gen.[ch]
 tools/uds2c.py           UDS catalog -> src/gen/s2_uds_gen.[ch]
 tools/pio_scons_guard.py PlatformIO workaround (see Toolchain notes)
 tools/check_button_mapping.sh  each handlebar-button Kconfig choice -> the right table entry
+tools/pio_app_offset.py  flash the app at the offset the partition table specifies
 include/s2_dbc.h         signal/message data model (shared with host tests)
 src/main.c               tasks: decoder, summary, UDS poller, LED/housekeeping
 src/can_bus.[ch]         TWAI node (esp_driver_twai), ISR -> queue, stats, bus-off recovery
