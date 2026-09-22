@@ -22,6 +22,7 @@ idf_component_register(
         "summary.c"
         "uds_client.c"
         "uds_decode.c"
+        "vehicle_button.c"
         "vehicle_state.c"
         "gen/s2_dbc_gen.c"
         "gen/s2_font5x7.c"

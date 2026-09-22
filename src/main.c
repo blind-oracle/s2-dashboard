@@ -24,6 +24,7 @@
 #include "status_led.h"
 #include "summary.h"
 #include "uds_client.h"
+#include "vehicle_button.h"
 #include "vehicle_state.h"
 
 static const char *TAG = "main";
@@ -50,6 +51,11 @@ static const char *TAG = "main";
 #define OPT_BLE_NUS 1
 #else
 #define OPT_BLE_NUS 0
+#endif
+#ifdef CONFIG_S2_DISPLAY_BUTTON_GPIO
+#define OPT_BUTTON_GPIO CONFIG_S2_DISPLAY_BUTTON_GPIO
+#else
+#define OPT_BUTTON_GPIO (-1)   /* the int is not emitted unless the pin is selected */
 #endif
 
 static void update_led(void)
@@ -105,10 +111,20 @@ void app_main(void)
              OPT_CHANGE_MIN_MS, CONFIG_S2_SUMMARY_PERIOD_MS,
              OPT_UDS ? "ENABLED" : "off");
 #if CONFIG_S2_DISPLAY_ENABLE
-    log_line("display:  ST7789 240x280, SCLK%d MOSI%d CS%d DC%d RST%d BL%d, %d Hz refresh, %d screens, button GPIO%d",
+    log_line("display:  ST7789 240x280, SCLK%d MOSI%d CS%d DC%d RST%d BL%d, %d Hz refresh, %d screens",
              CONFIG_S2_DISPLAY_SCLK_GPIO, CONFIG_S2_DISPLAY_MOSI_GPIO, CONFIG_S2_DISPLAY_CS_GPIO,
              CONFIG_S2_DISPLAY_DC_GPIO, CONFIG_S2_DISPLAY_RST_GPIO, CONFIG_S2_DISPLAY_BL_GPIO,
-             CONFIG_S2_DISPLAY_REFRESH_HZ, CONFIG_S2_DISPLAY_SCREENS, CONFIG_S2_DISPLAY_BUTTON_GPIO);
+             CONFIG_S2_DISPLAY_REFRESH_HZ, CONFIG_S2_DISPLAY_SCREENS);
+    {
+        const vbtn_def_t *btn = vbtn_selected();
+        if (btn) {
+            log_line("screens:  cycled by the %s button on the bars (%s)", btn->label, btn->note);
+        } else if (OPT_BUTTON_GPIO >= 0) {
+            log_line("screens:  cycled by a switch on GPIO%d", OPT_BUTTON_GPIO);
+        } else {
+            log_line("screens:  fixed on screen 1 (no button configured)");
+        }
+    }
 #else
     log_line("display:  disabled");
 #endif

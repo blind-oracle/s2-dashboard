@@ -9,7 +9,8 @@ stage of a future dashboard.
 
 It also drives an **ST7789V2 240x280 IPS display** as a rider-facing gauge: power
 out and regen, torque, pack voltage, energy used this key cycle and battery state
-of health, with a button to cycle between screens.
+of health. Screens are cycled from one of the motorcycle's own handlebar
+buttons, read off the bus, so no extra switch has to be wired.
 
 The same data goes out over **Bluetooth LE**, so a phone can read it without a
 laptop: a Nordic UART Service that published Android apps display as text with no
@@ -34,14 +35,14 @@ off by default.
 | Display DC / RS | **GPIO9** | |
 | Display RST | **GPIO8** | set to -1 if tied to the board reset |
 | Display BL | **GPIO7** | PWM dimmed; -1 if hardwired on |
-| Screen button | **GPIO6** | to GND, internal pull-up |
+| Screen button | **GPIO6** | optional, bench only; the handlebar button is the default |
 | Status LED | GPIO21 | on-board WS2812, already wired |
 | Console | USB-C | native USB Serial/JTAG, no UART bridge on this board |
 
 Every pin is configurable in `menuconfig` (S2 Dashboard menu). The six display
 signals are a contiguous run on the right-hand header (GP12 down to GP7), which
 suits a ribbon; note the header has only one GND and one 3V3 pad, both at the top
-of the *left* row, so power and the button return need their own leads.
+of the *left* row, so power needs its own leads.
 
 Avoid for any of these: GPIO0 (BOOT), 3/45/46 (strapping), 19/20 (USB),
 21 (on-board LED), 26-37 (flash/PSRAM), 43/44 (UART0), and 22-25 (do not exist).
@@ -97,8 +98,11 @@ DC    ------> GPIO9
 RST   ------> GPIO8
 BL    ------> GPIO7    (PWM dimmed; tie to 3V3 and set the option to -1 instead)
 
-Button: GPIO6 ------ switch ------ GND     (internal pull-up; no external parts needed,
-                                            though 10 k + 100 nF is wise in a vehicle)
+Button: GPIO6 ------ switch ------ GND     (OPTIONAL - only if you select a GPIO
+                                           switch instead of a handlebar button.
+                                           Internal pull-up, no external parts
+                                           needed, though 10 k + 100 nF is wise
+                                           in a vehicle)
 ```
 
 The module is 3.3 V logic and 3.3 V supply, so unlike the CAN transceiver it needs
@@ -197,7 +201,9 @@ board.
 | `S2_DISPLAY_REFRESH_HZ` | 10 | full-frame redraw rate |
 | `S2_DISPLAY_BAND_ROWS` | 40 | rows per SPI transfer |
 | `S2_DISPLAY_SCREENS` | 4 | screens the button cycles through |
-| `S2_DISPLAY_BUTTON_GPIO` / `_ACTIVE_LOW` | 6 / y | screen button; -1 disables |
+| What cycles the screens | handlebar button | or a GPIO switch, or nothing |
+| Which handlebar button | info / scroll | horn, high beam, either brake, hazards, cruise arm |
+| `S2_DISPLAY_BUTTON_GPIO` / `_ACTIVE_LOW` | 6 / y | only when the GPIO switch is selected |
 | `S2_DISPLAY_BL_PWM` / `_BRIGHTNESS` | y / 90 | LEDC-dimmed backlight |
 | `S2_DISPLAY_POWER_FULL_SCALE_KW` / `_REGEN_FULL_SCALE_KW` | 70 / 20 | gauge ends |
 | `S2_TORQUE_COUNTS_PER_NM_X100` | 335 | torque scale, hundredths (3.35 counts/Nm) |
@@ -220,11 +226,11 @@ board.
 | `nn.nn kWh` | 0x186 `trip_energy_consumed_wh` | the bike's own trip meter: energy used since **key-on**, which it also zeroes at each key cycle and clamps at 0 while charging |
 | `SOH nn%` | UDS RESS DID 0x020E | UDS-only, see the caveat below |
 
-Below the rows, one dot per screen marks where you are. **Screens 2 to 4 are
-deliberately empty** placeholders (`SCREEN 2 / (empty)`) for future content.
+**Screens 2 to 4 are deliberately empty** placeholders (`SCREEN 2 / (empty)`)
+for future content. Below the rows, one dot per screen marks where you are.
 
-**The button** on GPIO6 cycles screens on release, and the new screen is noted in
-the serial log.
+Screens advance on a press of the bike's own info/scroll button, and the new
+screen is noted in the serial log. See the next section.
 
 **Missing and stale data are visually distinct**, because a dashboard that
 invents numbers is worse than one that admits it cannot read them:
@@ -270,6 +276,61 @@ core 0 at a low priority; CAN decoding stays on core 1.
 
 The panel is brought up before the CAN bus, so the screen shows its placeholder
 dashes from the first moment rather than staying dark until traffic arrives.
+
+## Cycling screens from the handlebar
+
+The secondary bus carries the handlebar controls, so the screens can be paged
+from the bars with no switch wired to the board. This is the default; a GPIO
+switch is still selectable for bench work, where there is no bus to listen to.
+
+**There are no media buttons to use.** The S2 has no infotainment, and the
+database notes that it does not reuse the combustion-Harley CAN map, where
+0x383 was the radio. There is nothing for track forward or back, or volume.
+What does exist are these two-state controls:
+
+| Option | Signal | Confidence | Worth knowing |
+| --- | --- | --- | --- |
+| **info / scroll** (default) | 0x354 D1 | STRONG | the button the rider already uses to page the instrument cluster, and it does nothing else |
+| horn | 0x354 D2 | CONFIRMED | sounds the horn every time |
+| high beam | 0x152 D3 | STRONG | a flash-to-pass tap cycles the screen too |
+| front brake lever | 0x15A D6 | CONFIRMED | fires on every brake application |
+| rear brake lever | 0x133 D4 | CONFIRMED | fires on every brake application |
+| hazard switch | 0x15A D2 | CONFIRMED byte | whether it follows the switch or the blink is not pinned down; if it blinks, screens will advance repeatedly |
+| cruise arm switch | 0x160 D6 bit 7 | CONFIRMED | latching, so one press to arm and one to disarm |
+
+The info/scroll button is the default for the obvious reason: every other option
+does something else to the motorcycle when you press it.
+
+### How a press is detected
+
+The render loop polls the selected signal on every pass, which is every 10 ms
+plus however long a frame took, under the same short lock the rest of the display
+uses. A press is a transition into the held state.
+
+Two details stop it misfiring:
+
+- **The detector arms on its first sample.** A control already held when the
+  firmware starts, or when the frame reappears after the ignition cycles, does
+  not count as a press.
+- **It reads the change counter as well as the level.** `vs_signal_t::changes`
+  counts every transition, so a press that began and ended between two polls is
+  still counted rather than silently lost. The number of presses follows exactly
+  from the change delta and the two endpoint levels.
+
+One poll advances at most four screens. A real press yields one, and so does a
+press that fell entirely between polls, so that bound only ever trims a signal
+flapping faster than a human can press: the hazards option, if it turns out to
+follow the blink.
+
+What this cannot work around is the frame rate of 0x354 itself, which the
+database does not record. If the left switchgear frame turns out to be slow
+enough that a quick tap falls entirely between two frames, the decoder never sees
+the press and nothing downstream can recover it. The periodic frame table in the
+serial log prints the measured rate of every id, so that is the place to check.
+
+Not every option is a momentary button. The hazard and cruise switches latch, so
+they give one press when switched on and another when switched off. The brake
+levers are momentary but fire whenever you brake.
 
 ## What the log looks like
 
@@ -541,6 +602,7 @@ can-db/                  vendored database (DBC + UDS catalog, CC BY 4.0)
 tools/dbc2c.py           DBC -> src/gen/s2_dbc_gen.[ch]
 tools/uds2c.py           UDS catalog -> src/gen/s2_uds_gen.[ch]
 tools/pio_scons_guard.py PlatformIO workaround (see Toolchain notes)
+tools/check_button_mapping.sh  each handlebar-button Kconfig choice -> the right table entry
 include/s2_dbc.h         signal/message data model (shared with host tests)
 src/main.c               tasks: decoder, summary, UDS poller, LED/housekeeping
 src/can_bus.[ch]         TWAI node (esp_driver_twai), ISR -> queue, stats, bus-off recovery
@@ -554,6 +616,7 @@ src/log_writer.[ch]      non-blocking console writer (ring buffer + task)
 src/uds_client.[ch]      ISO-TP transport + UDS 0x22 poller
 src/uds_decode.[ch]      per-DID interpretation
 src/status_led.[ch]      WS2812 via RMT
+src/vehicle_button.[ch]  handlebar-button table and press detection (pure)
 src/ride_limits.h        plausibility/freshness rules shared by the screen and BLE
 src/ble_proto.[ch]       BLE wire formats and command grammar (pure, host-testable)
 src/ble_telemetry.[ch]   NimBLE peripheral: GATT table, advertising, publisher task
@@ -568,6 +631,7 @@ test/test_decoder/       Unity tests (pio test -e native)
 test/test_gfx/           renderer primitive tests
 test/test_screens/       layout tests: frame bounds, ring clearance, placeholders
 test/test_ble_proto/     wire-format, fragmentation and command-parser tests
+test/test_vehicle_button/ button table and press-detection tests
 ```
 
 ### Updating the database

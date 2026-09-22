@@ -319,20 +319,90 @@ menu "S2 Dashboard (LiveWire S2 CAN logger)"
             help
                 Screen 1 shows the ride data; the rest are placeholders for now.
 
+        choice
+            prompt "What cycles the screens"
+            default S2_DISPLAY_BUTTON_VEHICLE
+            depends on S2_DISPLAY_ENABLE
+
+            config S2_DISPLAY_BUTTON_VEHICLE
+                bool "A button on the motorcycle's own handlebar (over CAN)"
+                help
+                    The secondary bus broadcasts several momentary controls, so no
+                    extra switch has to be wired. Choose which one below.
+
+            config S2_DISPLAY_BUTTON_PIN
+                bool "A switch wired to a GPIO pin"
+                help
+                    Useful on the bench, where there is no bus to listen to.
+
+            config S2_DISPLAY_BUTTON_OFF
+                bool "Nothing (screen 1 only)"
+
+        endchoice
+
+        choice
+            prompt "Which handlebar button"
+            default S2_VEHICLE_BUTTON_INFO
+            depends on S2_DISPLAY_BUTTON_VEHICLE
+            help
+                Every option is a control the database documents as a two-state
+                byte on the broadcast bus. The screens advance on each press, so
+                prefer a button that does nothing else while riding.
+
+            config S2_VEHICLE_BUTTON_INFO
+                bool "Dash info / scroll button (0x354 D1)"
+                help
+                    The button the rider already uses to page through the
+                    instrument cluster, and it has no other effect. Database
+                    confidence is STRONG.
+
+            config S2_VEHICLE_BUTTON_HORN
+                bool "Horn (0x354 D2)"
+                help
+                    CONFIRMED, but it sounds the horn every time.
+
+            config S2_VEHICLE_BUTTON_HIGHBEAM
+                bool "High beam (0x152 D3)"
+                help
+                    STRONG. A flash-to-pass tap cycles the screen too.
+
+            config S2_VEHICLE_BUTTON_FRONT_BRAKE
+                bool "Front brake lever (0x15A D6)"
+                help
+                    CONFIRMED, but it fires on every brake application.
+
+            config S2_VEHICLE_BUTTON_REAR_BRAKE
+                bool "Rear brake lever (0x133 D4)"
+                help
+                    CONFIRMED, but it fires on every brake application.
+
+            config S2_VEHICLE_BUTTON_HAZARDS
+                bool "Hazard switch (0x15A D2)"
+                help
+                    CONFIRMED as a byte, but whether it follows the switch or the
+                    blink is not pinned down. If it blinks, the screens will
+                    advance repeatedly while the hazards are on.
+
+            config S2_VEHICLE_BUTTON_CRUISE
+                bool "Cruise control arm switch (0x160 D6 bit 7)"
+                help
+                    CONFIRMED. Latching, so one press per arm and one per disarm.
+
+        endchoice
+
         config S2_DISPLAY_BUTTON_GPIO
             int "Screen button GPIO (-1 to disable)"
             range -1 48
             default 6
-            depends on S2_DISPLAY_ENABLE
+            depends on S2_DISPLAY_BUTTON_PIN
             help
                 Wire a momentary switch between this pin and GND; the internal
-                pull-up is enabled. Short press cycles screens, long press (1 s)
-                resets the session energy counter.
+                pull-up is enabled. A press cycles to the next screen.
 
         config S2_DISPLAY_BUTTON_ACTIVE_LOW
             bool "Button pulls the pin low when pressed"
             default y
-            depends on S2_DISPLAY_ENABLE && S2_DISPLAY_BUTTON_GPIO >= 0
+            depends on S2_DISPLAY_BUTTON_PIN && S2_DISPLAY_BUTTON_GPIO >= 0
 
         config S2_DISPLAY_POWER_FULL_SCALE_KW
             int "Power gauge full scale (kW)"

@@ -15,6 +15,7 @@
 #include "s2_dbc_gen.h"
 #include "screens.h"
 #include "sdkconfig.h"
+#include "vehicle_button.h"
 #include "vehicle_state.h"
 
 #if !CONFIG_S2_DISPLAY_ENABLE
@@ -43,6 +44,21 @@ static const char *TAG = "display";
 #else
 #define OPT_BRIGHTNESS 100
 #endif
+#ifdef CONFIG_S2_DISPLAY_BUTTON_GPIO
+#define OPT_BUTTON_GPIO CONFIG_S2_DISPLAY_BUTTON_GPIO
+#else
+#define OPT_BUTTON_GPIO (-1)   /* the int is not emitted unless the pin is selected */
+#endif
+#ifdef CONFIG_S2_DISPLAY_BUTTON_ACTIVE_LOW
+#define OPT_BUTTON_ACTIVE_LOW 1
+#else
+#define OPT_BUTTON_ACTIVE_LOW 0
+#endif
+#ifdef CONFIG_S2_DISPLAY_BUTTON_VEHICLE
+#define OPT_BUTTON_VEHICLE 1
+#else
+#define OPT_BUTTON_VEHICLE 0
+#endif
 
 /*
  * The button is polled from the render loop, whose period is the tick plus
@@ -70,13 +86,66 @@ void display_next_screen(void)
 
 /* ------------------------------------------------------------------ button --- */
 
-#if CONFIG_S2_DISPLAY_BUTTON_GPIO >= 0
+/*
+ * Screens are cycled either by one of the motorcycle's own handlebar buttons,
+ * seen on the broadcast bus, or by a switch wired to a GPIO pin. The vehicle
+ * button is the default: it needs no wiring and the dash info/scroll button is
+ * the one the rider already uses to page through the instrument cluster.
+ */
+
+#if OPT_BUTTON_VEHICLE
+
+static vbtn_state_t s_vbtn;
+
+/*
+ * Bound on how many screens one poll may advance. A genuine press yields one,
+ * and a press that fell entirely between two polls also yields one, so this only
+ * ever trims a signal that is flapping far faster than a human can press, such
+ * as a selected control that turns out to follow a blink rather than a switch.
+ */
+#define MAX_ADVANCE_PER_POLL 4
+
+/* Nothing to set up: the button arrives on the bus. main.c logs which one. */
+static esp_err_t button_init(void) { return ESP_OK; }
+
+static void button_poll(void)
+{
+    const vbtn_def_t *def = vbtn_selected();
+    if (!def) {
+        return;
+    }
+
+    /* A short lock that only copies scalars out, as everywhere else here. */
+    bool valid;
+    uint64_t raw;
+    uint32_t changes;
+    vs_lock();
+    const vs_signal_t *sig = vs_signal(def->signal);
+    valid = sig && sig->valid;
+    raw = valid ? sig->raw : 0;
+    changes = valid ? sig->changes : 0;
+    vs_unlock();
+
+    unsigned presses = vbtn_feed(&s_vbtn, def, valid, raw, changes);
+    if (presses > MAX_ADVANCE_PER_POLL) {
+        presses = MAX_ADVANCE_PER_POLL;
+    }
+    for (unsigned i = 0; i < presses; i++) {
+        display_next_screen();
+    }
+    if (presses) {
+        log_tline("display: screen %u/%d (%s)", s_screen + 1, CONFIG_S2_DISPLAY_SCREENS, def->label);
+    }
+}
+
+#elif OPT_BUTTON_GPIO >= 0
+
 static esp_err_t button_init(void)
 {
     gpio_config_t cfg = {
-        .pin_bit_mask = 1ULL << CONFIG_S2_DISPLAY_BUTTON_GPIO,
+        .pin_bit_mask = 1ULL << OPT_BUTTON_GPIO,
         .mode = GPIO_MODE_INPUT,
-#if CONFIG_S2_DISPLAY_BUTTON_ACTIVE_LOW
+#if OPT_BUTTON_ACTIVE_LOW
         .pull_up_en = GPIO_PULLUP_ENABLE,
 #else
         .pull_down_en = GPIO_PULLDOWN_ENABLE,
@@ -87,8 +156,8 @@ static esp_err_t button_init(void)
 
 static bool button_is_down(void)
 {
-    int level = gpio_get_level(CONFIG_S2_DISPLAY_BUTTON_GPIO);
-#if CONFIG_S2_DISPLAY_BUTTON_ACTIVE_LOW
+    int level = gpio_get_level(OPT_BUTTON_GPIO);
+#if OPT_BUTTON_ACTIVE_LOW
     return level == 0;
 #else
     return level != 0;
@@ -96,11 +165,10 @@ static bool button_is_down(void)
 }
 
 /*
- * Polled debounce: a state only counts after DEBOUNCE_TICKS consecutive equal
- * samples. A long press fires the moment the threshold is crossed while the
- * button is still down; a short press fires on release if no long press did.
- * A button already held at boot is handled correctly because the debounced
- * state starts at "up" only after the first stable samples.
+ * Polled debounce: a state only counts once it has held for DEBOUNCE_US. The
+ * screen advances on release, so a held button does not repeat. A button already
+ * down at boot does not fire, because the debounced state starts released and
+ * only a release transition acts.
  */
 static void button_poll(void)
 {
@@ -121,14 +189,17 @@ static void button_poll(void)
     if (stable_down != sample && (now - sample_since_us) >= DEBOUNCE_US) {
         stable_down = sample;
         if (!stable_down) {
-            display_next_screen();      /* act on release, so a held button does not repeat */
+            display_next_screen();
             log_tline("display: screen %u/%d", s_screen + 1, CONFIG_S2_DISPLAY_SCREENS);
         }
     }
 }
+
 #else
+
 static esp_err_t button_init(void) { return ESP_OK; }
 static void button_poll(void) {}
+
 #endif
 
 /* ---------------------------------------------------------------- sampling --- */

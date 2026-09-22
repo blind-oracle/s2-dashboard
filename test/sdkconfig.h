@@ -13,3 +13,7 @@
 #define CONFIG_S2_DISPLAY_POWER_FULL_SCALE_KW 70
 #define CONFIG_S2_DISPLAY_REGEN_FULL_SCALE_KW 20
 #define CONFIG_S2_TORQUE_COUNTS_PER_NM_X100 335
+
+/* Screens cycle on a handlebar button; the info/scroll one by default. */
+#define CONFIG_S2_DISPLAY_BUTTON_VEHICLE 1
+#define CONFIG_S2_VEHICLE_BUTTON_INFO 1
