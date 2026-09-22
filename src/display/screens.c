@@ -267,4 +267,142 @@ void screens_render(gfx_t *g, unsigned screen, unsigned count, const dash_data_t
     draw_dots(g, screen, count);
 }
 
+
+/* ------------------------------------------------------------ update mode --- */
+
+#define C_OTA_HEAD  GFX_RGB(0xFF, 0xB0, 0x00)
+#define C_OTA_PASS  GFX_RGB(0x00, 0xE0, 0xE0)
+#define C_OTA_FAIL  GFX_RGB(0xFF, 0x30, 0x00)
+#define C_OTA_OK    GFX_RGB(0x00, 0xE0, 0x00)
+
+/* Update-mode rows. Full-width text, no gauge, so the layout is its own. */
+#define OU_Y_TITLE   14
+#define OU_Y_RULE    40
+#define OU_Y_L1      54
+#define OU_Y_V1      74
+#define OU_Y_L2     108
+#define OU_Y_V2     128
+#define OU_Y_L3     166
+#define OU_Y_V3     186
+#define OU_Y_BAR    212
+#define OU_BAR_H     22
+#define OU_Y_DETAIL 246
+#define OU_Y_HINT   266
+#define OU_MARGIN    10
+
+static void ota_label(gfx_t *g, int y, const char *s)
+{
+    gfx_text(g, OU_MARGIN, y, s, 1, C_LABEL);
+}
+
+/*
+ * Draw centred text that always fits: shrink the scale first, then truncate.
+ * These strings come from Kconfig and from the runtime, so they can be longer
+ * than any layout assumed, and drawing off the edge is the one outcome that must
+ * not happen.
+ */
+static void ota_value(gfx_t *g, int y, const char *s, int max_scale, uint16_t c)
+{
+    int avail = g->w - 2 * OU_MARGIN;
+    int sc = max_scale;
+    while (sc > 1 && gfx_text_width(s, sc) > avail) {
+        sc--;
+    }
+    if (gfx_text_width(s, sc) <= avail) {
+        gfx_text_center(g, g->w / 2, y, s, sc, c);
+        return;
+    }
+
+    char buf[64];
+    size_t n = 0;
+    while (s[n] != '\0' && n + 1 < sizeof(buf)) {
+        buf[n] = s[n];
+        buf[n + 1] = '\0';
+        if (gfx_text_width(buf, sc) > avail) {
+            buf[n] = '\0';
+            break;
+        }
+        n++;
+    }
+    gfx_text_center(g, g->w / 2, y, buf, sc, c);
+}
+
+void screens_render_update(gfx_t *g, const update_data_t *d)
+{
+    if (!g || !d) {
+        return;
+    }
+    gfx_fill(g, C_BG);
+
+    const char *title = "UPDATE MODE";
+    uint16_t title_c = C_OTA_HEAD;
+    if (d->phase == UPDATE_DONE) {
+        title = "UPDATED";
+        title_c = C_OTA_OK;
+    } else if (d->phase == UPDATE_FAILED) {
+        title = "FAILED";
+        title_c = C_OTA_FAIL;
+    } else if (d->phase == UPDATE_RECEIVING) {
+        title = "RECEIVING";
+    }
+    gfx_text_center(g, g->w / 2, OU_Y_TITLE, title, 2, title_c);
+    gfx_hline(g, OU_MARGIN, OU_Y_RULE, g->w - 2 * OU_MARGIN, C_TRACK);
+
+    if (d->phase == UPDATE_WAITING || d->phase == UPDATE_FAILED) {
+        /*
+         * How to connect. The passphrase is generated fresh for this session and
+         * never stored, so showing it here is what restricts the upload to
+         * somebody standing at the bike.
+         */
+        ota_label(g, OU_Y_L1, "WI-FI NETWORK");
+        ota_value(g, OU_Y_V1, d->ssid[0] ? d->ssid : "-", 3, C_VALUE);
+        ota_label(g, OU_Y_L2, "PASSWORD");
+        ota_value(g, OU_Y_V2, d->pass[0] ? d->pass : "-", 4, C_OTA_PASS);
+        ota_label(g, OU_Y_L3, "THEN OPEN");
+        ota_value(g, OU_Y_V3, d->ip[0] ? d->ip : "-", 3, C_VALUE);
+    } else {
+        /* Progress. A bar plus a percentage, or bytes when the size is unknown. */
+        char line[32];
+        int pct = -1;
+        if (d->total && d->received <= d->total) {
+            pct = (int)((uint64_t)d->received * 100u / d->total);
+        }
+        if (pct >= 0) {
+            snprintf(line, sizeof(line), "%d%%", pct);
+        } else {
+            snprintf(line, sizeof(line), "%lu KB", (unsigned long)(d->received / 1024u));
+        }
+        ota_value(g, OU_Y_V1, line, 5, C_VALUE);
+
+        snprintf(line, sizeof(line), "%lu of %lu KB", (unsigned long)(d->received / 1024u),
+                 (unsigned long)(d->total / 1024u));
+        if (d->total) {
+            ota_value(g, OU_Y_V2 + 18, line, 1, C_LABEL);
+        }
+
+        int bw = g->w - 2 * OU_MARGIN;
+        gfx_rect(g, OU_MARGIN, OU_Y_BAR, bw, OU_BAR_H, C_TRACK);
+        if (pct > 0) {
+            int fill = (bw - 4) * pct / 100;
+            if (fill > 0) {
+                gfx_fill_rect(g, OU_MARGIN + 2, OU_Y_BAR + 2, fill, OU_BAR_H - 4,
+                              d->phase == UPDATE_DONE ? C_OTA_OK : C_OTA_HEAD);
+            }
+        }
+    }
+
+    if (d->detail[0]) {
+        ota_value(g, OU_Y_DETAIL, d->detail, 1,
+                  d->phase == UPDATE_FAILED ? C_OTA_FAIL : C_LABEL);
+    }
+
+    const char *hint = "HOLD BUTTON TO CANCEL";
+    if (d->phase == UPDATE_DONE) {
+        hint = "REBOOTING";
+    } else if (d->phase == UPDATE_RECEIVING) {
+        hint = "DO NOT POWER OFF";
+    }
+    gfx_text_center(g, g->w / 2, OU_Y_HINT, hint, 1, C_DIM);
+}
+
 #endif /* CONFIG_S2_DISPLAY_ENABLE */

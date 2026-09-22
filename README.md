@@ -16,6 +16,10 @@ The same data goes out over **Bluetooth LE**, so a phone can read it without a
 laptop: a Nordic UART Service that published Android apps display as text with no
 development, and a documented custom GATT service for a purpose-built client.
 
+Firmware updates are **over Wi-Fi**: hold the screen button and the dashboard
+serves an upload page from its own access point, so the board never has to come
+out from behind the bodywork.
+
 Firmware: ESP-IDF 5.5 (C), built with PlatformIO. The default configuration is a
 **passive tap** (TWAI listen-only mode, never acknowledges or transmits). Active
 UDS polling of the diagnostic modules through the BCM gateway is implemented but
@@ -143,6 +147,7 @@ The datasheet write cycle allows up to 62.5 MHz; the vendor's own examples use
 ```
 pio run                 # build
 pio run -t upload       # flash over USB-C (hold BOOT while plugging in if no port shows up)
+                        # only needed once; after that hold the screen button to update over Wi-Fi
 pio device monitor      # USB CDC console; baud rate is irrelevant
 pio run -t menuconfig   # change pins / logging / UDS options ("S2 Dashboard" menu)
 pio test -e native      # host-side unit tests of the decoding core
@@ -213,6 +218,11 @@ board.
 | `S2_BLE_DASH_HZ` | 5 | dashboard notify rate, 1-20 Hz |
 | `S2_BLE_SNAPSHOT_MS` | 1000 | full-snapshot period |
 | `S2_BLE_TEXT_PERIOD_MS` | 1000 | text digest period on the UART service |
+| `S2_OTA_ENABLE` | y | allow the firmware to update itself over Wi-Fi |
+| `S2_OTA_AP_SSID` | `S2-DASH-OTA` | update-mode access point name |
+| `S2_OTA_LONG_PRESS_MS` | 2000 | hold time that enters update mode |
+| `S2_OTA_IDLE_TIMEOUT_S` | 300 | leave update mode after this long idle |
+| `S2_OTA_SELF_TEST_S` | 30 | confirm a new image after this long |
 
 ## What the display shows
 
@@ -593,11 +603,105 @@ inside the BLE stack. If the app partition ever runs out,
 optimisation rather than a requirement; the driver's RX queue absorbs the
 difference at 500 kbit/s.
 
+## Updating the firmware
+
+The dashboard can flash itself over Wi-Fi. Hold the screen button, it reboots
+into update mode, brings up its own access point and serves an upload page.
+Connect a phone, open the page in any browser, pick a `.bin` and that is it. No
+app, no stored credentials, no internet.
+
+### The one-time wired migration
+
+**This only works from a firmware built with the two-slot partition table.** A
+board flashed with the old single-slot table has nowhere to put a second image,
+so it needs one last cable:
+
+```
+pio run -t erase        # optional but safest: the table itself is changing
+pio run -t upload       # writes the bootloader, the new table and the app
+```
+
+The boot banner then reports `running ota_0 at 0x020000`. After that, updates
+are wireless. The layout:
+
+| Partition | Offset | Size | |
+| --- | --- | --- | --- |
+| nvs | `0x9000` | 24 KB | unmoved from the old table |
+| otadata | `0xf000` | 8 KB | which slot to boot |
+| phy_init | `0x11000` | 4 KB | |
+| ota_0 | `0x20000` | 1700 KB | |
+| ota_1 | `0x1d0000` | 1700 KB | |
+
+540 KB of the 4 MB part is left spare. The image is about 1.19 MB with Wi-Fi
+compiled in, which is 70% of a slot.
+
+The table is selected by `board_build.partitions` in `platformio.ini`, **not** by
+the Kconfig partition option. The PlatformIO ESP-IDF builder reads the former and
+ignores the latter, taking only `PARTITION_TABLE_OFFSET` from sdkconfig. Both are
+set so menuconfig tells the truth, but only the `platformio.ini` line has any
+effect.
+
+### Doing an update
+
+1. **Hold the screen button** for two seconds, parked. The dashboard refuses
+   while the bike is rolling, and reboots into update mode otherwise.
+2. The screen shows a network name, a **passphrase** and an address. The
+   passphrase is generated fresh every time and never stored, so only somebody
+   looking at the bike can connect.
+3. Join that network, open the address, pick the `.bin` from
+   `.pio/build/waveshare_esp32_s3_zero/firmware.bin`.
+4. The screen tracks progress and the version transition. On success it reboots
+   into the new firmware.
+
+Hold the button again to cancel. Update mode also gives up on its own after five
+minutes with nothing uploaded, so the access point is never left running.
+
+### Rollback
+
+A newly flashed image runs on probation. If it stays up for 30 seconds it is
+marked valid; if it panics or trips the watchdog first, the bootloader reverts to
+the slot that was working. The serial log says `image confirmed` when it passes,
+and the boot banner reports `image pending-verify` while it has not.
+
+Update mode refuses to start while an image is still on probation, because
+ESP-IDF will not begin a second update from an unconfirmed one.
+
+### What it does and does not protect against
+
+Images are checked for the `0xE9` app magic on the first byte and validated
+against their checksum before the boot slot is switched, so a truncated upload or
+the wrong file is rejected rather than booted. Images are **not signed**: someone
+who can read the passphrase off the screen can flash the device. That is the
+trade that was chosen, and the mitigations are the per-session passphrase, the
+standstill check and rollback.
+
+### Notes
+
+- **Update mode needs the display**, since the button is the only way in and the
+  screen is the only place the passphrase appears. A display-less build says so
+  at boot.
+- **BLE is never started in update mode.** The BLE controller executes from
+  flash and erasing flash stalls the cache, so a controller left running during
+  an update can starve. Coming up with it never started removes the problem and
+  leaves the heap for the Wi-Fi stack. Rebooting into update mode, rather than
+  tearing the radio down in place, is why no teardown code exists.
+- **CAN keeps running**, so the handlebar button can cancel and the standstill
+  check stays live. Its interrupt handler is also in flash, so some frames are
+  lost during erases; that costs nothing while parked and cannot disturb a bus
+  the firmware never acknowledges.
+- Writes use `OTA_WITH_SEQUENTIAL_WRITES`, which erases a 4 KB sector at a time
+  inside each write, rather than the one long partition-wide erase that
+  `OTA_SIZE_UNKNOWN` would do. That keeps every cache-off window short.
+- `CONFIG_ESP_WIFI_IRAM_OPT` and `CONFIG_ESP_WIFI_RX_IRAM_OPT` must stay
+  enabled. Turning them off saves about 27 KB of IRAM but moves Wi-Fi code into
+  flash, which is exactly the wrong trade for the one workload that erases flash
+  while the radio is serving a connection.
+
 ## Project layout
 
 ```
-platformio.ini           envs: waveshare_esp32_s3_zero (firmware), native (host tests)
-sdkconfig.defaults       SDK configuration (USB console, 4 MB flash, NimBLE, ...)
+platformio.ini           envs + board_build.partitions (the two-slot OTA table)
+sdkconfig.defaults       SDK configuration (USB console, 4 MB flash, NimBLE, OTA, ...)
 can-db/                  vendored database (DBC + UDS catalog, CC BY 4.0)
 tools/dbc2c.py           DBC -> src/gen/s2_dbc_gen.[ch]
 tools/uds2c.py           UDS catalog -> src/gen/s2_uds_gen.[ch]
@@ -618,6 +722,7 @@ src/uds_decode.[ch]      per-DID interpretation
 src/status_led.[ch]      WS2812 via RMT
 src/vehicle_button.[ch]  handlebar-button table and press detection (pure)
 src/ride_limits.h        plausibility/freshness rules shared by the screen and BLE
+src/ota.[ch]             update mode: access point, upload page, image write, rollback
 src/ble_proto.[ch]       BLE wire formats and command grammar (pure, host-testable)
 src/ble_telemetry.[ch]   NimBLE peripheral: GATT table, advertising, publisher task
 src/display/panel.[ch]   SPI bus, framebuffer, banded DMA flush, backlight

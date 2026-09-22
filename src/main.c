@@ -18,6 +18,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "log_writer.h"
+#include "nvs_flash.h"
+#include "ota.h"
 #include "s2_dbc_gen.h"
 #include "s2_uds_gen.h"
 #include "sdkconfig.h"
@@ -90,10 +92,33 @@ static void update_led(void)
     status_led_set_state(state);
 }
 
+/*
+ * NVS is initialised here rather than inside ble_telemetry_start(), because the
+ * Wi-Fi stack needs it too and a BLE-off build would otherwise never call it.
+ */
+static void nvs_bring_up(void)
+{
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_flash_init failed: %s", esp_err_to_name(err));
+    }
+}
+
 void app_main(void)
 {
     ESP_ERROR_CHECK(log_writer_start());
     vs_init();
+    nvs_bring_up();
+
+    /*
+     * Asked for by a long press before the reboot that landed here. Read once
+     * and cleared, so a power cycle always comes up in normal operation.
+     */
+    bool update_mode = ota_boot_is_update_mode();
     if (status_led_init() != ESP_OK) {
         ESP_LOGW(TAG, "status LED unavailable");
     }
@@ -135,6 +160,22 @@ void app_main(void)
 #else
     log_line("ble:      disabled");
 #endif
+    ota_log_boot_state();
+#if CONFIG_S2_OTA_ENABLE && CONFIG_S2_DISPLAY_ENABLE
+    log_line("update:   hold the screen button %d ms; access point \"%s\"",
+             CONFIG_S2_OTA_LONG_PRESS_MS, CONFIG_S2_OTA_AP_SSID);
+#elif CONFIG_S2_OTA_ENABLE
+    /*
+     * The only way into update mode is the screen button, and the passphrase is
+     * only ever shown on the screen, so a display-less build cannot use it.
+     */
+    log_line("update:   built in but unreachable - update mode needs the display");
+#else
+    log_line("update:   over-the-air updates disabled");
+#endif
+    if (update_mode) {
+        log_line("%s", "*** UPDATE MODE - BLE stays off, waiting for a firmware upload ***");
+    }
 
 #if CONFIG_S2_DISPLAY_ENABLE
     /*
@@ -151,26 +192,54 @@ void app_main(void)
 #endif
 
 #if CONFIG_S2_BLE_ENABLE
-    if (ble_telemetry_start() != ESP_OK) {
-        ESP_LOGE(TAG, "BLE not started - the CAN log and the screen carry on without it");
+    /*
+     * Skipped in update mode. The BLE controller executes from flash, and
+     * erasing flash stalls the cache, so the safe thing is for it never to have
+     * started. That also leaves the heap free for the Wi-Fi stack.
+     */
+    if (!update_mode) {
+        if (ble_telemetry_start() != ESP_OK) {
+            ESP_LOGE(TAG, "BLE not started - the CAN log and the screen carry on without it");
+        }
+        log_line("heap:     %u bytes free after BLE init",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     }
-    log_line("heap:     %u bytes free after BLE init",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 #endif
 
+    /*
+     * CAN runs in update mode too, so the handlebar button can still cancel and
+     * the standstill check stays live. It is listen-only, so losing frames to a
+     * flash erase costs nothing and cannot disturb a bus we never acknowledge.
+     */
     ESP_ERROR_CHECK(can_bus_start());
 
     xTaskCreatePinnedToCore(decoder_task, "can_decode", 8192, NULL, 10, NULL, 1);
-    xTaskCreate(summary_task, "summary", 8192, NULL, 3, NULL);
+    if (!update_mode) {
+        xTaskCreate(summary_task, "summary", 8192, NULL, 3, NULL);
+    }
 #if CONFIG_S2_UDS_ENABLE
-    if (uds_client_start() != ESP_OK) {
+    if (!update_mode && uds_client_start() != ESP_OK) {
         ESP_LOGE(TAG, "UDS poller not started");
+    }
+#endif
+
+#if CONFIG_S2_OTA_ENABLE
+    if (update_mode) {
+        esp_err_t err = ota_update_mode_start();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "update mode failed to start: %s", esp_err_to_name(err));
+            log_line("update:   could not start, rebooting to normal operation");
+            ota_leave_update_mode();
+        }
+        log_line("heap:     %u bytes free with the access point up",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     }
 #endif
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(100));
         can_bus_service();
+        ota_tick();
         update_led();
         status_led_tick();
     }

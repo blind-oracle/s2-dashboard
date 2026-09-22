@@ -7,6 +7,7 @@
  * of the ring, plus that the gauge and the degraded-data placeholders behave.
  */
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 #include <unity.h>
 
@@ -285,6 +286,131 @@ void test_soh_distinguishes_uds_off_from_no_answer(void)
 void setUp(void) {}
 void tearDown(void) {}
 
+
+/* ------------------------------------------------------------ update mode --- */
+
+static void render_update(const update_data_t *d)
+{
+    gfx_init(&g, fb, W, H);
+    screens_render_update(&g, d);
+}
+
+static update_data_t waiting_data(void)
+{
+    update_data_t d;
+    memset(&d, 0, sizeof(d));
+    d.phase = UPDATE_WAITING;
+    snprintf(d.ssid, sizeof(d.ssid), "S2-DASH-OTA");
+    snprintf(d.pass, sizeof(d.pass), "48210736");
+    snprintf(d.ip, sizeof(d.ip), "192.168.4.1");
+    return d;
+}
+
+static void test_update_screen_stays_inside_the_panel(void)
+{
+    update_data_t d = waiting_data();
+    render_update(&d);
+    TEST_ASSERT_TRUE_MESSAGE(inside_frame(), "update screen draws outside the panel");
+
+    /* Every phase, including the widest possible strings. */
+    d.phase = UPDATE_RECEIVING;
+    d.received = 1219419;
+    d.total = 1740800;
+    snprintf(d.detail, sizeof(d.detail), "0.1.0 to 9.99.99-rc1");
+    render_update(&d);
+    TEST_ASSERT_TRUE_MESSAGE(inside_frame(), "receiving screen draws outside the panel");
+
+    d.phase = UPDATE_DONE;
+    render_update(&d);
+    TEST_ASSERT_TRUE_MESSAGE(inside_frame(), "done screen draws outside the panel");
+
+    d.phase = UPDATE_FAILED;
+    snprintf(d.detail, sizeof(d.detail), "image is larger than the slot");
+    render_update(&d);
+    TEST_ASSERT_TRUE_MESSAGE(inside_frame(), "failed screen draws outside the panel");
+}
+
+/*
+ * The strings come from Kconfig and from the runtime, so they can be longer than
+ * the designer assumed. The renderer shrinks the scale to fit; what must never
+ * happen is drawing off the edge.
+ */
+static void test_update_screen_survives_overlong_strings(void)
+{
+    update_data_t d;
+    memset(&d, 0, sizeof(d));
+    d.phase = UPDATE_WAITING;
+    memset(d.ssid, 'W', sizeof(d.ssid) - 1);
+    memset(d.pass, '8', sizeof(d.pass) - 1);
+    memset(d.ip, '2', sizeof(d.ip) - 1);
+    memset(d.detail, 'X', sizeof(d.detail) - 1);
+    render_update(&d);
+    TEST_ASSERT_TRUE_MESSAGE(inside_frame(), "overlong strings overflow the panel");
+}
+
+static void test_update_screen_shows_the_passphrase_while_waiting(void)
+{
+    /* The passphrase is what restricts the upload to somebody at the bike, so
+     * it has to actually be drawn, and in its own colour. */
+    const uint16_t c_pass = GFX_RGB(0x00, 0xE0, 0xE0);
+    update_data_t d = waiting_data();
+    render_update(&d);
+    TEST_ASSERT_GREATER_THAN_UINT_MESSAGE(0, count_colour(c_pass), "passphrase not drawn");
+
+    /* Once receiving, the connection details give way to progress. */
+    d.phase = UPDATE_RECEIVING;
+    d.received = 100;
+    d.total = 1000;
+    render_update(&d);
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(0, count_colour(c_pass),
+                                   "passphrase still on screen while receiving");
+}
+
+static void test_update_progress_bar_tracks_the_byte_count(void)
+{
+    const uint16_t c_bar = GFX_RGB(0xFF, 0xB0, 0x00);
+    update_data_t d = waiting_data();
+    d.phase = UPDATE_RECEIVING;
+    d.total = 1000000;
+
+    d.received = 0;
+    render_update(&d);
+    unsigned at_zero = count_colour(c_bar);
+
+    d.received = 500000;
+    render_update(&d);
+    unsigned at_half = count_colour(c_bar);
+
+    d.received = 1000000;
+    render_update(&d);
+    unsigned at_full = count_colour(c_bar);
+
+    TEST_ASSERT_GREATER_THAN_UINT(at_zero, at_half);
+    TEST_ASSERT_GREATER_THAN_UINT(at_half, at_full);
+}
+
+/* A total of zero means the size is unknown; it must not divide by it. */
+static void test_update_progress_without_a_known_total(void)
+{
+    update_data_t d = waiting_data();
+    d.phase = UPDATE_RECEIVING;
+    d.total = 0;
+    d.received = 65536;
+    render_update(&d);
+    TEST_ASSERT_TRUE(inside_frame());
+}
+
+static void test_update_screen_handles_null_and_empty(void)
+{
+    update_data_t d;
+    memset(&d, 0, sizeof(d));
+    gfx_init(&g, fb, W, H);
+    screens_render_update(&g, NULL);     /* must not crash */
+    screens_render_update(NULL, &d);
+    render_update(&d);                   /* all-empty strings */
+    TEST_ASSERT_TRUE(inside_frame());
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -296,5 +422,11 @@ int main(void)
     RUN_TEST(test_gauge_clamps_beyond_full_scale);
     RUN_TEST(test_stale_values_are_dimmed_not_hidden);
     RUN_TEST(test_soh_distinguishes_uds_off_from_no_answer);
+    RUN_TEST(test_update_screen_stays_inside_the_panel);
+    RUN_TEST(test_update_screen_survives_overlong_strings);
+    RUN_TEST(test_update_screen_shows_the_passphrase_while_waiting);
+    RUN_TEST(test_update_progress_bar_tracks_the_byte_count);
+    RUN_TEST(test_update_progress_without_a_known_total);
+    RUN_TEST(test_update_screen_handles_null_and_empty);
     return UNITY_END();
 }

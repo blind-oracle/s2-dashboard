@@ -452,6 +452,72 @@ menu "S2 Dashboard (LiveWire S2 CAN logger)"
 
     endmenu
 
+    menu "Firmware updates over Wi-Fi (OTA)"
+
+        config S2_OTA_ENABLE
+            bool "Allow the firmware to update itself over the air"
+            default y
+            help
+                Holding the screen button puts the dashboard into update mode: it
+                reboots, brings up its own Wi-Fi access point and serves an upload
+                page. Connect a phone, open the page in any browser and pick a
+                .bin file. No app and no stored credentials.
+
+                Requires a partition table with two app slots. That is set by
+                board_build.partitions in platformio.ini, NOT by the Kconfig
+                partition option, because the PlatformIO ESP-IDF builder reads the
+                former and ignores the latter. Changing to a two-slot table needs
+                one wired flash; after that, updates are wireless.
+
+                Also requires the display. Update mode is entered by holding the
+                screen button and the access point passphrase is generated fresh
+                each time and shown on the screen, so with the display disabled
+                there is neither a way in nor a way to learn the password.
+
+        config S2_OTA_AP_SSID
+            string "Access point name"
+            default "S2-DASH-OTA"
+            depends on S2_OTA_ENABLE
+            help
+                Shown in the phone's Wi-Fi list while update mode is active.
+
+        config S2_OTA_LONG_PRESS_MS
+            int "Hold time to enter update mode (ms)"
+            range 500 10000
+            default 2000
+            depends on S2_OTA_ENABLE
+            help
+                How long the screen button must be held. A hold of this length
+                does not also cycle the screen.
+
+                Note the default button is the bike's own dash info/scroll
+                button, which the instrument cluster uses for trip resets. If a
+                long hold turns out to do something on the cluster, raise this or
+                pick a different button under Display.
+
+        config S2_OTA_IDLE_TIMEOUT_S
+            int "Leave update mode after this long with no upload (s)"
+            range 30 3600
+            default 300
+            depends on S2_OTA_ENABLE
+            help
+                Update mode reboots back to normal operation when nothing has
+                been uploaded for this long, so the access point is never left up
+                by accident. The timer stops while an upload is in progress.
+
+        config S2_OTA_SELF_TEST_S
+            int "Confirm a new image after this long (s)"
+            range 5 300
+            default 30
+            depends on S2_OTA_ENABLE
+            help
+                A freshly flashed image runs on probation. If it stays up this
+                long with every subsystem started, it is marked valid. If it
+                panics or trips the watchdog first, the bootloader reverts to the
+                previous slot on the next boot.
+
+    endmenu
+
     menu "BLE telemetry"
 
         config S2_BLE_ENABLE

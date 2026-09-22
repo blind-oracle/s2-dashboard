@@ -91,15 +91,18 @@ const vbtn_def_t *vbtn_selected(void)
 #endif
 }
 
-unsigned vbtn_feed(vbtn_state_t *st, const vbtn_def_t *def, bool valid, uint64_t raw,
-                   uint32_t changes)
+vbtn_event_t vbtn_feed(vbtn_state_t *st, const vbtn_def_t *def, bool valid, uint64_t raw,
+                       uint32_t changes, int64_t now_us, int64_t long_press_us)
 {
+    vbtn_event_t ev = { 0, false };
+
     if (!st || !def) {
-        return 0;
+        return ev;
     }
     if (!valid) {
         st->armed = false;
-        return 0;
+        st->long_fired = false;
+        return ev;
     }
 
     bool pressed = (raw & def->mask) == def->pressed;
@@ -108,32 +111,70 @@ unsigned vbtn_feed(vbtn_state_t *st, const vbtn_def_t *def, bool valid, uint64_t
         st->armed = true;
         st->prev_pressed = pressed;
         st->prev_changes = changes;
-        return 0;
+        st->press_since_us = now_us;
+        /*
+         * A control already held when we start reports nothing: marking the hold
+         * as having already fired suppresses the long press now and the short
+         * press when it is eventually released.
+         */
+        st->long_fired = pressed;
+        return ev;
     }
 
     /*
      * Unsigned subtraction, so a wrap of the 32-bit change counter still gives
      * the right delta. The control alternates between released and held, so the
-     * number of rising edges among `delta` transitions follows from the delta and
-     * the two endpoint levels.
+     * number of completed presses - that is, transitions back into released -
+     * follows from the delta and the two endpoint levels.
      */
     uint32_t delta = changes - st->prev_changes;
-    unsigned presses;
-    if (!st->prev_pressed && pressed) {
-        /* Odd number of transitions, ending held. */
-        presses = delta ? (unsigned)((delta + 1u) / 2u) : 1u;
+    unsigned completed;
+    if (!st->prev_pressed && !pressed) {
+        completed = (unsigned)(delta / 2u);             /* even count, still released */
+    } else if (!st->prev_pressed && pressed) {
+        /* Odd count, ends held: the final press has not been released yet. */
+        completed = delta ? (unsigned)((delta - 1u) / 2u) : 0u;
     } else if (st->prev_pressed && !pressed) {
         /*
-         * Odd number of transitions, ending released. The guard matters: a level
-         * that changed without the counter advancing is inconsistent input, and
-         * delta - 1 would underflow to billions of presses.
+         * Odd count, ends released. The guard matters: a level that changed
+         * without the counter advancing is inconsistent input, and delta + 1
+         * would still be right but delta itself must not be trusted as 0.
          */
-        presses = delta ? (unsigned)((delta - 1u) / 2u) : 0u;
+        completed = delta ? (unsigned)((delta + 1u) / 2u) : 1u;
     } else {
-        presses = (unsigned)(delta / 2u);           /* even count, same level */
+        completed = (unsigned)(delta / 2u);             /* even count, still held */
     }
 
+    /*
+     * A hold that already reported a long press must not also report a short
+     * press when it ends, so drop the completion that closes it.
+     */
+    if (st->long_fired && completed > 0) {
+        completed--;
+        st->long_fired = false;
+    }
+
+    /*
+     * Restart the hold timer whenever a new hold begins: either the level went
+     * released -> held, or it was held at both samples but the counter moved,
+     * which means it was released and pressed again in between.
+     */
+    if (pressed && (!st->prev_pressed || delta >= 2)) {
+        st->press_since_us = now_us;
+        st->long_fired = false;
+    }
+    if (!pressed) {
+        st->long_fired = false;
+    }
+
+    if (pressed && !st->long_fired && long_press_us > 0 &&
+        (now_us - st->press_since_us) >= long_press_us) {
+        ev.long_press = true;
+        st->long_fired = true;
+    }
+
+    ev.presses = completed;
     st->prev_pressed = pressed;
     st->prev_changes = changes;
-    return presses;
+    return ev;
 }

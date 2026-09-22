@@ -53,22 +53,42 @@ typedef struct {
     bool armed;             /* a first sample has been seen */
     bool prev_pressed;
     uint32_t prev_changes;
+    int64_t press_since_us; /* when the current hold began */
+    bool long_fired;        /* this hold has already reported a long press */
 } vbtn_state_t;
 
+/* What happened since the previous sample. */
+typedef struct {
+    unsigned presses;       /* completed short presses */
+    bool long_press;        /* the current hold just crossed the threshold */
+} vbtn_event_t;
+
 /*
- * Feed one sample of the selected signal and get the number of presses since the
- * previous sample.
+ * Feed one sample of the selected signal and get what happened since the last
+ * one.
  *
  * `changes` is vs_signal_t::changes, which counts every transition of the raw
  * value. Using it as well as the current level means a press that began and
- * ended between two polls is still counted, rather than silently lost.
+ * ended between two polls is still counted, rather than silently lost. The
+ * number of completed presses follows exactly from the change delta and the two
+ * endpoint levels.
+ *
+ * A short press is reported on RELEASE, not on the initial press, so that one
+ * hold cannot report both a short and a long press. `long_press_us` sets the
+ * hold threshold and fires at most once per hold; pass 0 to disable long-press
+ * detection entirely.
+ *
+ * The hold is timed from the poll that first observed it, not from the physical
+ * press, which is unknowable here. The threshold is therefore reached one poll
+ * period late at worst, and the poll that first sees a press never also reports
+ * a long press.
  *
  * The first sample only arms the detector, so a control already held when the
- * firmware starts does not register as a press. An invalid signal disarms it, so
- * a frame that stops and resumes does not fire a spurious press either.
+ * firmware starts reports neither a short nor a long press. An invalid signal
+ * disarms it, so a frame that stops and resumes does not fire spuriously either.
  */
-unsigned vbtn_feed(vbtn_state_t *st, const vbtn_def_t *def, bool valid, uint64_t raw,
-                   uint32_t changes);
+vbtn_event_t vbtn_feed(vbtn_state_t *st, const vbtn_def_t *def, bool valid, uint64_t raw,
+                       uint32_t changes, int64_t now_us, int64_t long_press_us);
 
 #ifdef __cplusplus
 }

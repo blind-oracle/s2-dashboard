@@ -45,8 +45,37 @@ typedef struct {
     bool uds_enabled;       /* explains a missing SoH: it is UDS-only */
 } dash_data_t;
 
+/*
+ * Update mode. Kept as a plain struct with no ESP-IDF types so screens.c stays
+ * host-testable; src/ota.c fills it in.
+ */
+typedef enum {
+    UPDATE_WAITING = 0,   /* access point up, nothing uploaded yet */
+    UPDATE_RECEIVING,
+    UPDATE_DONE,          /* image accepted, about to reboot */
+    UPDATE_FAILED,
+} update_phase_t;
+
+#define UPDATE_SSID_MAX 33
+#define UPDATE_PASS_MAX 16
+#define UPDATE_IP_MAX 16
+#define UPDATE_DETAIL_MAX 48
+
+typedef struct {
+    update_phase_t phase;
+    char ssid[UPDATE_SSID_MAX];
+    char pass[UPDATE_PASS_MAX];
+    char ip[UPDATE_IP_MAX];
+    uint32_t received;          /* bytes written so far */
+    uint32_t total;             /* 0 when the size is not known */
+    char detail[UPDATE_DETAIL_MAX];  /* version transition, or why it failed */
+} update_data_t;
+
 /* Draw one screen into g. screen is 0-based; count sets the indicator dots. */
 void screens_render(gfx_t *g, unsigned screen, unsigned count, const dash_data_t *d);
+
+/* Draw the update-mode screen: how to connect, then upload progress. */
+void screens_render_update(gfx_t *g, const update_data_t *d);
 
 /* Full-scale ends of the power ring, in kW (regen side is negative). */
 void screens_gauge_range(double *regen_kw, double *power_kw);

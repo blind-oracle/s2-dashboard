@@ -60,7 +60,37 @@ CONFIG_BT_NIMBLE_PINNED_TO_CORE_0=y
 # 16.8 KB less DIRAM (110.3 KB vs 127.1 KB used) for 110 KB more flash (754 KB
 # vs 643 KB). Worth it because runtime DIRAM is the scarce resource once the
 # 134 KB framebuffer is allocated, and because running out of flash fails the
-# build visibly, with partitions_singleapp_large.csv as the fix, whereas running
-# out of heap fails at runtime inside the BLE stack. The documented caveat is
-# degraded Bluetooth while flash is being erased, which this firmware never does.
+# build visibly whereas running out of heap fails at runtime inside the BLE
+# stack.
+#
+# The documented caveat is degraded Bluetooth while flash is being erased. OTA
+# does erase flash, so that is no longer hypothetical - it is handled by
+# stopping BLE and deinitialising the controller before update mode starts, so
+# no flash-resident controller code is running while sectors are erased. See
+# src/ota.c. The same applies to the CAN ISR, which CONFIG_TWAI_ISR_IN_IRAM=n
+# above also leaves in flash; update mode stops the TWAI driver too.
 CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY=y
+
+# Over-the-air updates. The partition table itself is selected by
+# board_build.partitions in platformio.ini, which is what the PlatformIO espidf
+# builder actually reads; this option only keeps menuconfig honest about it.
+# Two 1700 KB app slots: nvs 24K at 0x9000 (unmoved from the single-app table,
+# so the one-time wired migration preserves it), otadata 8K, phy_init 4K,
+# ota_0 at 0x20000, ota_1 at 0x1d0000, 540 KB spare.
+CONFIG_PARTITION_TABLE_TWO_OTA_LARGE=y
+
+# Run a newly flashed image on probation: if it does not call
+# esp_ota_mark_app_valid_cancel_rollback() the next boot reverts to the slot that
+# was working before. A panic or a watchdog before that point rolls back on its
+# own, which is the failure this protects against.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Keep the Wi-Fi hot paths in IRAM. These default to y on the S3 and must stay
+# that way: turning them off saves ~27 KB of IRAM but moves Wi-Fi code into
+# flash, and update mode erases flash while the Wi-Fi radio is serving the
+# upload. That is the one workload where flash-resident radio code starves.
+CONFIG_ESP_WIFI_IRAM_OPT=y
+CONFIG_ESP_WIFI_RX_IRAM_OPT=y
+
+# One phone at a time on the update access point; no station mode is used.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y

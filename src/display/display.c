@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "log_writer.h"
+#include "ota.h"
 #include "panel.h"
 #include "ride_limits.h"
 #include "s2_dbc_gen.h"
@@ -59,6 +60,15 @@ static const char *TAG = "display";
 #else
 #define OPT_BUTTON_VEHICLE 0
 #endif
+/*
+ * Hold time that enters update mode. The int is not emitted when OTA is off, and
+ * a threshold of 0 disables long-press detection entirely.
+ */
+#ifdef CONFIG_S2_OTA_LONG_PRESS_MS
+#define OPT_LONG_PRESS_US ((int64_t)CONFIG_S2_OTA_LONG_PRESS_MS * 1000)
+#else
+#define OPT_LONG_PRESS_US 0
+#endif
 
 /*
  * The button is polled from the render loop, whose period is the tick plus
@@ -85,6 +95,23 @@ void display_next_screen(void)
 }
 
 /* ------------------------------------------------------------------ button --- */
+
+#if OPT_BUTTON_VEHICLE || OPT_BUTTON_GPIO >= 0
+/*
+ * A long hold toggles update mode. Entering it reboots, so this does not return
+ * on success; ota_request_update_mode() logs its own reason when it refuses,
+ * which it does while the bike is moving or while a new image is unconfirmed.
+ */
+static void button_long_press(void)
+{
+    if (ota_update_mode_active()) {
+        log_tline("display: leaving update mode");
+        ota_leave_update_mode();
+    } else {
+        ota_request_update_mode();
+    }
+}
+#endif
 
 /*
  * Screens are cycled either by one of the motorcycle's own handlebar buttons,
@@ -126,7 +153,17 @@ static void button_poll(void)
     changes = valid ? sig->changes : 0;
     vs_unlock();
 
-    unsigned presses = vbtn_feed(&s_vbtn, def, valid, raw, changes);
+    vbtn_event_t ev = vbtn_feed(&s_vbtn, def, valid, raw, changes, esp_timer_get_time(),
+                                OPT_LONG_PRESS_US);
+    if (ev.long_press) {
+        button_long_press();
+        return;
+    }
+    /* While update mode is up, only the hold gesture is live. */
+    if (ota_update_mode_active()) {
+        return;
+    }
+    unsigned presses = ev.presses;
     if (presses > MAX_ADVANCE_PER_POLL) {
         presses = MAX_ADVANCE_PER_POLL;
     }
@@ -175,6 +212,8 @@ static void button_poll(void)
     static bool stable_down;
     static bool last_sample;
     static int64_t sample_since_us;
+    static int64_t down_since_us;
+    static bool long_fired;
 
     /*
      * Debounced on wall-clock time, not on a count of polls: this runs from the
@@ -188,10 +227,22 @@ static void button_poll(void)
     }
     if (stable_down != sample && (now - sample_since_us) >= DEBOUNCE_US) {
         stable_down = sample;
-        if (!stable_down) {
+        if (stable_down) {
+            down_since_us = now;
+            long_fired = false;
+        } else if (long_fired) {
+            long_fired = false;         /* the hold already acted; not a screen change */
+        } else if (!ota_update_mode_active()) {
             display_next_screen();
             log_tline("display: screen %u/%d", s_screen + 1, CONFIG_S2_DISPLAY_SCREENS);
         }
+    }
+
+    /* Same hold gesture as the handlebar button, fired once per hold. */
+    if (stable_down && !long_fired && OPT_LONG_PRESS_US > 0 &&
+        (now - down_since_us) >= OPT_LONG_PRESS_US) {
+        long_fired = true;
+        button_long_press();
     }
 }
 
@@ -314,9 +365,15 @@ static void display_task(void *arg)
             last_render = now;
             next_render = now + period_us;
 
-            dash_data_t data;
-            snapshot(&data, now, dt_s);
-            screens_render(panel_gfx(), s_screen, (unsigned)CONFIG_S2_DISPLAY_SCREENS, &data);
+            if (ota_update_mode_active()) {
+                update_data_t ud;
+                ota_get_update_data(&ud);
+                screens_render_update(panel_gfx(), &ud);
+            } else {
+                dash_data_t data;
+                snapshot(&data, now, dt_s);
+                screens_render(panel_gfx(), s_screen, (unsigned)CONFIG_S2_DISPLAY_SCREENS, &data);
+            }
             esp_err_t err = panel_flush();
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "flush failed: %s", esp_err_to_name(err));
