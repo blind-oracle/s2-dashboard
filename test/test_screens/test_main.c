@@ -417,6 +417,7 @@ void test_telematics_screen_explains_a_missing_uds(void)
     TEST_ASSERT_TRUE_MESSAGE(off > on, "no hint that the telematics screen needs UDS");
 }
 
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -437,6 +438,11 @@ static update_data_t waiting_data(void)
     snprintf(d.ssid, sizeof(d.ssid), "S2-DASH-OTA");
     snprintf(d.pass, sizeof(d.pass), "48210736");
     snprintf(d.ip, sizeof(d.ip), "192.168.4.1");
+    /* The driver reported the access point up; without this the screen
+     * deliberately refuses to show a network to join. */
+    d.ap_up = true;
+    d.channel = 1;
+    d.tx_power_qdbm = 52;
     return d;
 }
 
@@ -545,6 +551,73 @@ static void test_update_screen_handles_null_and_empty(void)
     TEST_ASSERT_TRUE(inside_frame());
 }
 
+/*
+ * esp_wifi_start() returning OK does not mean the access point is beaconing, so
+ * the screen must not offer a network to join until the driver says AP_START.
+ * On a bike with no serial console this screen is the only evidence.
+ */
+static void test_update_screen_refuses_to_show_a_network_until_the_radio_is_up(void)
+{
+    const uint16_t c_pass = GFX_RGB(0x00, 0xE0, 0xE0);
+    const uint16_t c_fail = GFX_RGB(0xFF, 0x30, 0x00);
+
+    update_data_t d = waiting_data();
+    d.ap_up = false;
+    render_update(&d);
+    TEST_ASSERT_TRUE_MESSAGE(inside_frame(), "the radio-down screen draws outside the panel");
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(0, count_colour(c_pass),
+                                   "passphrase shown even though the radio never came up");
+    TEST_ASSERT_GREATER_THAN_UINT_MESSAGE(0, count_colour(c_fail),
+                                          "no warning shown when the radio is down");
+
+    /* And with the radio up it goes back to showing the passphrase. */
+    d.ap_up = true;
+    render_update(&d);
+    TEST_ASSERT_GREATER_THAN_UINT(0, count_colour(c_pass));
+}
+
+/* The same must hold after a failed upload: still no network if the radio died. */
+static void test_radio_down_outranks_a_failed_upload(void)
+{
+    const uint16_t c_pass = GFX_RGB(0x00, 0xE0, 0xE0);
+    update_data_t d = waiting_data();
+    d.phase = UPDATE_FAILED;
+    d.ap_up = false;
+    snprintf(d.detail, sizeof(d.detail), "connection dropped");
+    render_update(&d);
+    TEST_ASSERT_TRUE(inside_frame());
+    TEST_ASSERT_EQUAL_UINT(0, count_colour(c_pass));
+}
+
+/* Channel and power are the numbers that make a weak link diagnosable. */
+static void test_update_screen_reports_channel_and_power(void)
+{
+    update_data_t a = waiting_data();
+    a.channel = 1;
+    a.tx_power_qdbm = 52;
+    render_update(&a);
+    unsigned with_low = count_colour(GFX_RGB(0x60, 0x60, 0x60));
+    TEST_ASSERT_TRUE(inside_frame());
+
+    update_data_t b = waiting_data();
+    b.channel = 11;
+    b.tx_power_qdbm = 80;
+    render_update(&b);
+    TEST_ASSERT_TRUE(inside_frame());
+    TEST_ASSERT_NOT_EQUAL_UINT_MESSAGE(with_low, count_colour(GFX_RGB(0x60, 0x60, 0x60)),
+                                       "channel and power are not shown");
+
+    /* Every power the API accepts, and the quantised set, must stay in frame. */
+    const int8_t powers[] = { 8, 20, 28, 34, 44, 52, 56, 60, 66, 72, 80, 84 };
+    for (unsigned i = 0; i < sizeof(powers) / sizeof(powers[0]); i++) {
+        update_data_t d = waiting_data();
+        d.tx_power_qdbm = powers[i];
+        d.channel = 13;
+        render_update(&d);
+        TEST_ASSERT_TRUE_MESSAGE(inside_frame(), "a transmit power overflows the panel");
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -566,6 +639,9 @@ int main(void)
     RUN_TEST(test_update_screen_stays_inside_the_panel);
     RUN_TEST(test_update_screen_survives_overlong_strings);
     RUN_TEST(test_update_screen_shows_the_passphrase_while_waiting);
+    RUN_TEST(test_update_screen_refuses_to_show_a_network_until_the_radio_is_up);
+    RUN_TEST(test_radio_down_outranks_a_failed_upload);
+    RUN_TEST(test_update_screen_reports_channel_and_power);
     RUN_TEST(test_update_progress_bar_tracks_the_byte_count);
     RUN_TEST(test_update_progress_without_a_known_total);
     RUN_TEST(test_update_screen_handles_null_and_empty);

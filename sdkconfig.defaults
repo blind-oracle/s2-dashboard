@@ -64,11 +64,14 @@ CONFIG_BT_NIMBLE_PINNED_TO_CORE_0=y
 # stack.
 #
 # The documented caveat is degraded Bluetooth while flash is being erased. OTA
-# does erase flash, so that is no longer hypothetical - it is handled by
-# stopping BLE and deinitialising the controller before update mode starts, so
-# no flash-resident controller code is running while sectors are erased. See
-# src/ota.c. The same applies to the CAN ISR, which CONFIG_TWAI_ISR_IN_IRAM=n
-# above also leaves in flash; update mode stops the TWAI driver too.
+# does erase flash, so that is no longer hypothetical. It is handled by entering
+# update mode through a reboot with BLE never started, so no flash-resident
+# controller code is running while sectors are erased. See src/ota.c.
+#
+# The CAN ISR, which CONFIG_TWAI_ISR_IN_IRAM=n above also leaves in flash, DOES
+# keep running in update mode: the handlebar button arrives over CAN and is the
+# only way to cancel. Losing frames to a flash erase costs nothing while parked
+# and cannot disturb a bus the firmware never acknowledges.
 CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY=y
 
 # Over-the-air updates. The partition table itself is selected by
@@ -94,3 +97,9 @@ CONFIG_ESP_WIFI_RX_IRAM_OPT=y
 
 # One phone at a time on the update access point; no station mode is used.
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+
+# Drop PHY transmit power to the lowest table entry on any boot that follows a
+# brownout. Off by default upstream. On a vehicle supply this is the right
+# reflex: if the rail already collapsed once, the radio should not immediately
+# ask for the largest peak current on the board again.
+CONFIG_ESP_PHY_REDUCE_TX_POWER=y

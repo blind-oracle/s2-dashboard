@@ -115,6 +115,17 @@ typedef struct {
     uint32_t received;          /* bytes written so far */
     uint32_t total;             /* 0 when the size is not known */
     char detail[UPDATE_DETAIL_MAX];  /* version transition, or why it failed */
+
+    /*
+     * The radio's own account of itself. esp_wifi_start() returning OK does not
+     * mean the access point is beaconing, so the connection details are only
+     * worth showing once the driver has said WIFI_EVENT_AP_START. Until then
+     * this screen is the only place the failure is visible, because the bike
+     * carries no serial console.
+     */
+    bool ap_up;
+    uint8_t channel;            /* 0 until known */
+    int8_t tx_power_qdbm;       /* quarter dBm, as esp_wifi_get_max_tx_power reports */
 } update_data_t;
 
 /* How many screens the renderer actually draws; the rest are placeholders. */

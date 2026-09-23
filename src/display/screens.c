@@ -534,7 +534,18 @@ void screens_render_update(gfx_t *g, const update_data_t *d)
     gfx_text_center(g, g->w / 2, OU_Y_TITLE, title, 2, title_c);
     gfx_hline(g, OU_MARGIN, OU_Y_RULE, g->w - 2 * OU_MARGIN, C_TRACK);
 
-    if (d->phase == UPDATE_WAITING || d->phase == UPDATE_FAILED) {
+    if ((d->phase == UPDATE_WAITING || d->phase == UPDATE_FAILED) && !d->ap_up) {
+        /*
+         * The driver never reported the access point as up. Offering a network
+         * to join would be a lie, so say so instead. This is the only place the
+         * failure is visible: the bike carries no serial console.
+         */
+        ota_value(g, OU_Y_V1, "RADIO NOT UP", 3, C_OTA_FAIL);
+        ota_label(g, OU_Y_L2, "THE ACCESS POINT DID NOT START.");
+        ota_label(g, OU_Y_L2 + 14, "CHECK THE 5V SUPPLY AND THE LOG.");
+        ota_label(g, OU_Y_L3 + 14, "LOWERING S2_OTA_AP_TX_POWER_QDBM");
+        ota_label(g, OU_Y_V3 + 8, "MAY HELP ON A MARGINAL SUPPLY.");
+    } else if (d->phase == UPDATE_WAITING || d->phase == UPDATE_FAILED) {
         /*
          * How to connect. The passphrase is generated fresh for this session and
          * never stored, so showing it here is what restricts the upload to
@@ -589,6 +600,14 @@ void screens_render_update(gfx_t *g, const update_data_t *d)
         hint = "DO NOT POWER OFF";
     }
     gfx_text_center(g, g->w / 2, OU_Y_HINT, hint, 1, C_DIM);
+
+    /* What the radio actually reported, so a weak link is diagnosable. */
+    if (d->ap_up) {
+        char radio[32];
+        snprintf(radio, sizeof(radio), "CH %u   %d.%u dBm", (unsigned)d->channel,
+                 d->tx_power_qdbm / 4, (unsigned)((d->tx_power_qdbm % 4) * 25));
+        gfx_text_center(g, g->w / 2, OU_Y_HINT - 12, radio, 1, C_DIM);
+    }
 }
 
 #endif /* CONFIG_S2_DISPLAY_ENABLE */

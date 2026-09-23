@@ -13,6 +13,7 @@
 #include "display.h"
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
+#include "esp_system.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -59,6 +60,35 @@ static const char *TAG = "main";
 #else
 #define OPT_BUTTON_GPIO (-1)   /* the int is not emitted unless the pin is selected */
 #endif
+
+/*
+ * Why the chip last restarted. Worth a line of its own because a brownout is
+ * otherwise invisible: the detector sits at its least sensitive setting
+ * (2.44 V), the message it prints goes out on a USB console that the brownout
+ * itself takes down, and on the bike there is no host attached at all. A rail
+ * that sags far enough to disturb the radio but not far enough to reset will
+ * report a normal reason here, which is itself useful to know.
+ */
+static const char *reset_reason_name(esp_reset_reason_t r)
+{
+    switch (r) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_SW: return "software restart";
+    case ESP_RST_PANIC: return "PANIC";
+    case ESP_RST_INT_WDT: return "interrupt watchdog";
+    case ESP_RST_TASK_WDT: return "task watchdog";
+    case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep sleep wake";
+    case ESP_RST_BROWNOUT: return "BROWNOUT - the supply collapsed";
+    case ESP_RST_USB: return "USB peripheral";
+    case ESP_RST_JTAG: return "JTAG";
+    case ESP_RST_EFUSE: return "efuse error";
+    case ESP_RST_PWR_GLITCH: return "power glitch";
+    case ESP_RST_CPU_LOCKUP: return "CPU lockup";
+    case ESP_RST_EXT: return "external pin";
+    default: return "unknown";
+    }
+}
 
 static void update_led(void)
 {
@@ -126,6 +156,7 @@ void app_main(void)
     const esp_app_desc_t *app = esp_app_get_description();
     log_line("%s", "");
     log_line("s2-dashboard %s (%s %s) - LiveWire S2 CAN logger", app->version, app->date, app->time);
+    log_line("reset:    %s", reset_reason_name(esp_reset_reason()));
     log_line("database: %s", S2_DBC_VERSION);
     log_line("          %u broadcast messages / %u signals, %u UDS modules / %u DIDs", S2_DBC_MESSAGE_COUNT,
              S2_DBC_SIGNAL_COUNT, (unsigned)s2_uds_module_count, (unsigned)s2_uds_did_count);

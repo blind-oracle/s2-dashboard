@@ -34,6 +34,7 @@ void ota_get_update_data(update_data_t *out)
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
+#include "esp_phy_init.h"
 #include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -59,6 +60,13 @@ static const char *TAG = "ota";
  * only this exact word counts as a request. It is cleared as soon as it is read,
  * so even a one-in-four-billion false match self-corrects on the next boot.
  */
+/* Boolean Kconfig symbols are undefined, not 0, when disabled. */
+#ifdef CONFIG_S2_OTA_FRESH_RF_CAL
+#define OPT_FRESH_RF_CAL 1
+#else
+#define OPT_FRESH_RF_CAL 0
+#endif
+
 #define OTA_REQUEST_MAGIC 0x52455551u   /* "REQU" */
 static RTC_NOINIT_ATTR uint32_t s_boot_request;
 
@@ -85,6 +93,17 @@ static SemaphoreHandle_t s_status_lock;
 static int64_t s_last_activity_us;
 static int64_t s_boot_us;
 static bool s_confirmed;
+
+/*
+ * Set from the Wi-Fi event handler. esp_wifi_start() returning ESP_OK only means
+ * the driver accepted the request; WIFI_EVENT_AP_START, which arrives
+ * asynchronously afterwards, is the only affirmative statement that the access
+ * point is up and the beacon task is running. Nothing else in the system can
+ * tell the difference, and the bike carries no serial console, so this is what
+ * the screen keys off.
+ */
+static volatile bool s_ap_up;
+static volatile uint32_t s_probe_reqs;
 
 /* ------------------------------------------------------------- status --- */
 
@@ -142,6 +161,7 @@ void ota_get_update_data(update_data_t *out)
     status_lock();
     *out = s_status;
     status_unlock();
+    out->ap_up = s_ap_up;
 }
 
 bool ota_update_mode_active(void)
@@ -461,6 +481,74 @@ static esp_err_t update_post(httpd_req_t *req)
 /* ----------------------------------------------------- bringing it up --- */
 
 /*
+ * Log what the radio does, and record whether it ever actually came up. Probe
+ * requests are the useful extra: one arriving proves the receive path works and
+ * that a phone is scanning this channel, which separates "we are not
+ * transmitting" from "nobody is looking".
+ */
+static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg;
+    (void)base;
+    switch (id) {
+    case WIFI_EVENT_AP_START:
+        s_ap_up = true;
+        log_tline("ota: access point up");
+        break;
+    case WIFI_EVENT_AP_STOP:
+        s_ap_up = false;
+        log_tline("ota: access point stopped");
+        break;
+    case WIFI_EVENT_AP_STACONNECTED: {
+        const wifi_event_ap_staconnected_t *e = (const wifi_event_ap_staconnected_t *)data;
+        log_tline("ota: phone joined, aid %u", (unsigned)e->aid);
+        s_last_activity_us = esp_timer_get_time();
+        break;
+    }
+    case WIFI_EVENT_AP_STADISCONNECTED:
+        log_tline("ota: phone left");
+        break;
+    case WIFI_EVENT_AP_PROBEREQRECVED: {
+        const wifi_event_ap_probe_req_rx_t *e = (const wifi_event_ap_probe_req_rx_t *)data;
+        /* Only the first few, or a scanning phone would flood the log. */
+        if (s_probe_reqs < 5) {
+            log_tline("ota: probe request, rssi %d", e->rssi);
+        }
+        s_probe_reqs++;
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+/* Read back what the radio settled on, rather than what we asked for. */
+static void log_radio_state(void)
+{
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    uint8_t chan = 0;
+    wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+    int8_t power = 0;
+    wifi_country_t country;
+    memset(&country, 0, sizeof(country));
+
+    esp_wifi_get_mode(&mode);
+    esp_wifi_get_channel(&chan, &second);
+    esp_wifi_get_max_tx_power(&power);
+    esp_wifi_get_country(&country);
+
+    log_line("ota:      radio mode %d, channel %u, tx %d.%02u dBm, country %.2s ch %u-%u",
+             (int)mode, (unsigned)chan, power / 4, (unsigned)((power % 4) * 25), country.cc,
+             (unsigned)country.schan, (unsigned)(country.schan + country.nchan - 1));
+
+    status_lock();
+    s_status.channel = chan;
+    s_status.tx_power_qdbm = power;
+    status_unlock();
+}
+
+
+/*
  * A fresh passphrase per session, shown on the screen and never stored. Digits
  * only: it has to be read off a small display and typed on a phone. WPA2 needs
  * at least eight characters, which is exactly what this produces.
@@ -492,9 +580,28 @@ esp_err_t ota_update_mode_start(void)
         return ESP_FAIL;
     }
 
+    ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL),
+                        TAG, "wifi events");
+
+#if OPT_FRESH_RF_CAL
+    /*
+     * Force a full calibration by throwing away the cached one. The cache is
+     * only checked for integrity - format version, chip MAC, length - never for
+     * correctness, so a blob calibrated under a noisy or sagging supply passes
+     * every check and is then reused on every later boot and never refreshed.
+     * That failure survives reboots and is indistinguishable from a dead radio.
+     * A full calibration costs about 100 ms, and update mode is rare.
+     */
+    esp_err_t cal = esp_phy_erase_cal_data_in_nvs();
+    log_line("ota:      cached RF calibration %s, forcing a full one",
+             cal == ESP_OK ? "erased" : "could not be erased");
+#endif
+
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "wifi init");
     ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "wifi storage");
+    /* Probe requests are masked by default; they are the proof that RX works. */
+    ESP_RETURN_ON_ERROR(esp_wifi_set_event_mask(0), TAG, "wifi event mask");
 
     wifi_config_t wc = { 0 };
     snprintf((char *)wc.ap.ssid, sizeof(wc.ap.ssid), "%s", CONFIG_S2_OTA_AP_SSID);
@@ -508,9 +615,21 @@ esp_err_t ota_update_mode_start(void)
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &wc), TAG, "wifi config");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
 
+    /*
+     * Deliberately below the 20 dBm the PHY would otherwise use. Wi-Fi at full
+     * power is the largest peak current anything on this board draws, and a
+     * phone standing at the bike has link margin to spare. On a marginal or
+     * noisy supply this is the first knob to turn down.
+     */
+    esp_err_t pw = esp_wifi_set_max_tx_power((int8_t)CONFIG_S2_OTA_AP_TX_POWER_QDBM);
+    if (pw != ESP_OK) {
+        ESP_LOGW(TAG, "could not set tx power: %s", esp_err_to_name(pw));
+    }
+    log_radio_state();
+
     esp_netif_ip_info_t ip;
     memset(&ip, 0, sizeof(ip));
-    esp_netif_get_ip_info(s_netif, &ip);
+    ESP_RETURN_ON_ERROR(esp_netif_get_ip_info(s_netif, &ip), TAG, "netif ip");
 
     httpd_config_t hc = HTTPD_DEFAULT_CONFIG();
     hc.lru_purge_enable = true;
@@ -535,6 +654,20 @@ esp_err_t ota_update_mode_start(void)
 
     s_update_mode = true;
     s_last_activity_us = esp_timer_get_time();
+
+    /*
+     * WIFI_EVENT_AP_START is posted from the Wi-Fi task, so give it a moment
+     * before deciding. Everything above returning ESP_OK does not mean the
+     * radio is beaconing.
+     */
+    for (int i = 0; i < 20 && !s_ap_up; i++) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (!s_ap_up) {
+        log_line("%s", "ota:      *** the access point did NOT come up - check the 5 V supply ***");
+        log_line("%s", "ota:      try a lower S2_OTA_AP_TX_POWER_QDBM, and measure the rail");
+        return ESP_OK;      /* stay in update mode so the screen can say so */
+    }
 
     log_line("ota:      update mode - join \"%s\", pass %s, then open http://" IPSTR,
              CONFIG_S2_OTA_AP_SSID, pass, IP2STR(&ip.ip));

@@ -225,6 +225,8 @@ board.
 | `S2_OTA_LONG_PRESS_MS` | 2000 | hold time that enters update mode |
 | `S2_OTA_IDLE_TIMEOUT_S` | 300 | leave update mode after this long idle |
 | `S2_OTA_SELF_TEST_S` | 30 | confirm a new image after this long |
+| `S2_OTA_AP_TX_POWER_QDBM` | 52 | access point transmit power, quarter dBm, so 13 dBm |
+| `S2_OTA_FRESH_RF_CAL` | y | recalibrate the radio on entry to update mode |
 
 ## What the display shows
 
@@ -716,6 +718,48 @@ in the table.
 
 Hold the button again to cancel. Update mode also gives up on its own after five
 minutes with nothing uploaded, so the access point is never left running.
+
+### If the access point is not visible
+
+The screen will tell you. It shows **RADIO NOT UP** in red instead of a
+passphrase whenever the driver has not reported `WIFI_EVENT_AP_START`, because
+`esp_wifi_start()` returning success does not mean the radio is beaconing. When
+the access point is up, the channel and the actual transmit power appear under
+the connection details.
+
+Two things make this failure mode likely on a vehicle, and both have a knob:
+
+- **Transmit power.** Wi-Fi at full power is the largest peak current anything
+  on this board draws. The default is deliberately 13 dBm rather than the 20 dBm
+  the PHY would otherwise use, set by `S2_OTA_AP_TX_POWER_QDBM` in quarter-dBm
+  units. Lower it further if the access point is unreliable; a phone at the bike
+  has link margin to spare. The driver quantises to
+  {8, 20, 28, 34, 44, 52, 56, 60, 66, 72, 80}, so only those values do anything.
+- **Stale radio calibration.** ESP-IDF caches an RF calibration blob in NVS and
+  reuses it on every boot, checking only its format version, the chip's MAC and
+  its length. A blob calibrated while the supply was noisy or sagging passes all
+  of those, is never refreshed, and produces a radio that looks dead across
+  reboots. `S2_OTA_FRESH_RF_CAL` erases it on entry to update mode so a full
+  calibration runs, costing about 100 ms on a path taken rarely and on purpose.
+
+`CONFIG_ESP_PHY_REDUCE_TX_POWER` is also enabled, so a boot following a brownout
+drops transmit power to the lowest table entry on its own.
+
+The serial log now reports the reset reason on every boot, including
+`BROWNOUT - the supply collapsed`. That matters because the brownout detector
+sits at its least sensitive setting of 2.44 V and the message it prints goes out
+over a USB console the brownout itself takes down, so on the bike the event
+would otherwise leave no trace.
+
+If the screen says the radio is up but no phone sees the network, the log will
+show whether any probe requests arrived. Probe requests prove the receive path
+works and that a phone is scanning the channel; beacons going out but nothing
+coming back points at the supply or the antenna rather than at the firmware.
+Espressif's limit for supply ripple is **80 mV peak to peak**, which a 12 V buck
+converter with long leads and no bulk capacitance at the board can exceed
+easily. Measure the 5 V pad with a scope before changing anything else, add a
+bulk capacitor across the 5 V and ground pads, and keep the switching converter
+away from the antenna end of the board.
 
 ### Rollback
 

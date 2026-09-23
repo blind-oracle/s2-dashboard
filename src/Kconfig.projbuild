@@ -516,6 +516,42 @@ menu "S2 Dashboard (LiveWire S2 CAN logger)"
             help
                 Shown in the phone's Wi-Fi list while update mode is active.
 
+        config S2_OTA_AP_TX_POWER_QDBM
+            int "Access point transmit power (quarter dBm)"
+            range 8 84
+            default 52
+            depends on S2_OTA_ENABLE
+            help
+                Passed to esp_wifi_set_max_tx_power(), whose unit is 0.25 dBm.
+                The range 8 to 84 is 2 dBm to 20 dBm, and the driver quantises to
+                {8, 20, 28, 34, 44, 52, 56, 60, 66, 72, 80}, so only those values
+                mean anything. 52 is 13 dBm.
+
+                The default is deliberately well below the 20 dBm the PHY would
+                otherwise use. Wi-Fi at full power is the largest peak current
+                anything on this board draws, and a phone standing at the bike
+                has far more link margin than it needs. If the access point is
+                not visible on a supply that is marginal or noisy, lowering this
+                further is the first thing to try.
+
+        config S2_OTA_FRESH_RF_CAL
+            bool "Recalibrate the radio on entry to update mode"
+            default y
+            depends on S2_OTA_ENABLE
+            help
+                Erases the cached RF calibration in NVS before starting Wi-Fi, so
+                the radio does a full calibration instead of reusing the stored
+                blob.
+
+                Worth doing because the cached blob is only checked for integrity,
+                never for correctness: its format version, the chip's MAC and its
+                length are validated, so a blob calibrated under a noisy or
+                sagging supply passes every check and is then reused on every
+                later boot and never refreshed. That failure survives reboots and
+                looks exactly like a dead radio. A full calibration costs about
+                100 ms and update mode is entered rarely and deliberately, so
+                there is nothing to save by caching it here.
+
         config S2_OTA_LONG_PRESS_MS
             int "Hold time to enter update mode (ms)"
             range 500 10000
