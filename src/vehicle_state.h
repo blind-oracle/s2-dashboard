@@ -56,6 +56,8 @@ typedef struct {
  * show them. Populated by src/uds_decode.c, which runs only when
  * CONFIG_S2_UDS_ENABLE is on; everything stays invalid otherwise.
  */
+#define VS_PLMN_MAX 12
+
 typedef struct {
     bool soh_valid;         /* RESS DID 0x020E, "SoH-like reference" */
     double soh_pct;
@@ -63,6 +65,20 @@ typedef struct {
     bool fine_soc_valid;    /* RESS DID 0x0213, internal fine SoC/SoE */
     double fine_soc_pct;
     int64_t fine_soc_ts_us;
+
+    /*
+     * Telematics, from the TCU. Only polled when S2_UDS_POLL_TCU is on, which
+     * is off by default because a position is privacy-sensitive in a shared log.
+     * The position refreshes on the order of minutes, not seconds.
+     */
+    bool gps_valid;         /* TCU DID 0x0200, two big-endian float32 */
+    double gps_lat, gps_lon;
+    int64_t gps_ts_us;
+    bool cell_signal_valid; /* TCU DID 0x0297 byte 0 */
+    double cell_signal;
+    int64_t cell_signal_ts_us;
+    char plmn[VS_PLMN_MAX]; /* TCU DID 0x0296, ASCII "MCC MNC"; "" until read */
+    int64_t plmn_ts_us;
 } vs_uds_t;
 
 void vs_init(void);

@@ -269,18 +269,152 @@ void test_stale_values_are_dimmed_not_hidden(void)
     TEST_ASSERT_TRUE_MESSAGE(count_colour(C_POWER) > 0, "the stale header should still be amber");
 }
 
+/* State of health lives on the battery screen now, not the ride screen. */
 void test_soh_distinguishes_uds_off_from_no_answer(void)
 {
     dash_data_t d = live_data();
     d.soh_state = FIELD_MISSING;
     d.uds_enabled = false;
-    render(0, &d);
+    render(1, &d);
     unsigned a = count_colour(GFX_RGB(0x60, 0x60, 0x60));
     d.uds_enabled = true;
-    render(0, &d);
+    render(1, &d);
     unsigned b = count_colour(GFX_RGB(0x60, 0x60, 0x60));
-    /* different strings ("SOH n/a" vs "SOH --%") paint different pixel counts */
+    /* "n/a" plus the explanatory line, versus a bare "--" */
     TEST_ASSERT_TRUE_MESSAGE(a != b, "the SoH placeholder does not say why it is missing");
+}
+
+/* The ride screen shows motor speed where state of health used to be. */
+void test_ride_screen_shows_rpm_not_soh(void)
+{
+    dash_data_t d = live_data();
+    d.rpm_state = FIELD_LIVE;
+    d.motor_rpm = 4210;
+    render(0, &d);
+    unsigned with_rpm = count_colour(GFX_RGB(0xFF, 0xFF, 0xFF));
+
+    d.rpm_state = FIELD_MISSING;
+    render(0, &d);
+    unsigned without = count_colour(GFX_RGB(0xFF, 0xFF, 0xFF));
+    TEST_ASSERT_NOT_EQUAL_UINT(with_rpm, without);
+
+    /* Changing state of health must no longer alter the ride screen at all. */
+    d.rpm_state = FIELD_LIVE;
+    render(0, &d);
+    unsigned base = count_colour(GFX_RGB(0x60, 0x60, 0x60));
+    d.soh_state = FIELD_MISSING;
+    d.uds_enabled = !d.uds_enabled;
+    render(0, &d);
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(base, count_colour(GFX_RGB(0x60, 0x60, 0x60)),
+                                   "state of health still affects the ride screen");
+}
+
+
+/* --------------------------------------------------------- detail screens --- */
+
+/* Every field populated with a plausible but extreme value. */
+static dash_data_t detail_data(void)
+{
+    dash_data_t d = live_data();
+    d.rpm_state = FIELD_LIVE;          d.motor_rpm = -9999;
+    d.cell_state = FIELD_LIVE;         d.cell_mv_min = 2988; d.cell_mv_avg = 3901; d.cell_mv_max = 4211;
+    d.current_state = FIELD_LIVE;      d.pack_amps = -238.7;
+    d.soc_state = FIELD_LIVE;          d.soc_pct = 100;
+    d.soh_state = FIELD_LIVE;          d.soh_pct = 97;
+    d.pack_temp_state = FIELD_LIVE;    d.pack_t_min = -20; d.pack_t_avg = 31; d.pack_t_max = 102;
+    d.coolant_state = FIELD_LIVE;      d.coolant_c = 60;
+    d.inverter_state = FIELD_LIVE;     d.inverter_c = 102;
+    d.ambient_state = FIELD_LIVE;      d.ambient_c = -18;
+    d.accel_state = FIELD_LIVE;        d.accel_now = -7865; d.accel_max_pos = 8123; d.accel_max_neg = -8877;
+    d.tyre_state = FIELD_LIVE;         d.tyre_front_kpa = 510; d.tyre_rear_kpa = 248;
+    d.gps_state = FIELD_LIVE;          d.gps_lat = -33.86785; d.gps_lon = -151.20732;
+    d.cell_signal_state = FIELD_LIVE;  d.cell_signal = 141;
+    snprintf(d.plmn, sizeof(d.plmn), "310 410");
+    d.uds_enabled = true;
+    return d;
+}
+
+void test_every_screen_stays_inside_the_panel(void)
+{
+    dash_data_t d = detail_data();
+    for (unsigned sc = 0; sc < SCREENS_IMPLEMENTED; sc++) {
+        render(sc, &d);
+        char msg[48];
+        snprintf(msg, sizeof(msg), "screen %u draws outside the panel", sc + 1);
+        TEST_ASSERT_TRUE_MESSAGE(inside_frame(), msg);
+    }
+}
+
+/* The same, with nothing ever received: every field is a placeholder. */
+void test_every_screen_stays_inside_when_nothing_is_known(void)
+{
+    dash_data_t d;
+    memset(&d, 0, sizeof(d));   /* all states FIELD_MISSING, uds off */
+    for (unsigned sc = 0; sc < SCREENS_IMPLEMENTED; sc++) {
+        render(sc, &d);
+        char msg[48];
+        snprintf(msg, sizeof(msg), "empty screen %u draws outside the panel", sc + 1);
+        TEST_ASSERT_TRUE_MESSAGE(inside_frame(), msg);
+    }
+}
+
+/* A screen past the implemented ones must still be a safe placeholder. */
+void test_screens_beyond_the_implemented_ones(void)
+{
+    dash_data_t d = detail_data();
+    render(SCREENS_IMPLEMENTED, &d);
+    TEST_ASSERT_TRUE(inside_frame());
+    render(7, &d);
+    TEST_ASSERT_TRUE(inside_frame());
+}
+
+void test_detail_screens_show_placeholders_not_zeros(void)
+{
+    dash_data_t live = detail_data();
+    dash_data_t none;
+    memset(&none, 0, sizeof(none));
+    /* Each detail screen must look different with and without data; a screen
+     * that rendered zeros for missing values would look identical to 0.0. */
+    for (unsigned sc = 1; sc < SCREENS_IMPLEMENTED; sc++) {
+        render(sc, &live);
+        unsigned a = count_colour(GFX_RGB(0xFF, 0xFF, 0xFF));
+        render(sc, &none);
+        unsigned b = count_colour(GFX_RGB(0xFF, 0xFF, 0xFF));
+        char msg[56];
+        snprintf(msg, sizeof(msg), "screen %u looks the same with no data", sc + 1);
+        TEST_ASSERT_TRUE_MESSAGE(a != b, msg);
+    }
+}
+
+void test_pressure_conversion(void)
+{
+    double out = 0;
+    const char *unit = screens_pressure(248.2, &out);
+    TEST_ASSERT_NOT_NULL(unit);
+    /* The host build selects PSI, matching the Kconfig default. */
+    TEST_ASSERT_EQUAL_STRING("PSI", unit);
+    TEST_ASSERT_FLOAT_WITHIN(0.05, 36.0, out);
+
+    /* Zero and a big value must stay finite and correctly scaled. */
+    screens_pressure(0.0, &out);
+    TEST_ASSERT_EQUAL_FLOAT(0.0, out);
+    screens_pressure(510.0, &out);
+    TEST_ASSERT_FLOAT_WITHIN(0.05, 73.97, out);
+}
+
+/* The telematics screen has to explain itself when UDS polling is off, because
+ * that is the default build and every value on it would otherwise be dashes. */
+void test_telematics_screen_explains_a_missing_uds(void)
+{
+    dash_data_t d;
+    memset(&d, 0, sizeof(d));
+    d.uds_enabled = false;
+    render(4, &d);
+    unsigned off = count_colour(GFX_RGB(0x60, 0x60, 0x60));
+    d.uds_enabled = true;
+    render(4, &d);
+    unsigned on = count_colour(GFX_RGB(0x60, 0x60, 0x60));
+    TEST_ASSERT_TRUE_MESSAGE(off > on, "no hint that the telematics screen needs UDS");
 }
 
 void setUp(void) {}
@@ -422,6 +556,13 @@ int main(void)
     RUN_TEST(test_gauge_clamps_beyond_full_scale);
     RUN_TEST(test_stale_values_are_dimmed_not_hidden);
     RUN_TEST(test_soh_distinguishes_uds_off_from_no_answer);
+    RUN_TEST(test_ride_screen_shows_rpm_not_soh);
+    RUN_TEST(test_every_screen_stays_inside_the_panel);
+    RUN_TEST(test_every_screen_stays_inside_when_nothing_is_known);
+    RUN_TEST(test_screens_beyond_the_implemented_ones);
+    RUN_TEST(test_detail_screens_show_placeholders_not_zeros);
+    RUN_TEST(test_pressure_conversion);
+    RUN_TEST(test_telematics_screen_explains_a_missing_uds);
     RUN_TEST(test_update_screen_stays_inside_the_panel);
     RUN_TEST(test_update_screen_survives_overlong_strings);
     RUN_TEST(test_update_screen_shows_the_passphrase_while_waiting);

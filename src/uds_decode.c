@@ -342,10 +342,44 @@ static bool decode_specific(const s2_uds_module_t *m, const s2_uds_did_t *d, con
             float lat, lon;
             memcpy(&lat, &a, 4);
             memcpy(&lon, &b, 4);
-            snprintf(out, outlen, "GPS lat %.6f lon %.6f (coarse refresh, minutes)", (double)lat, (double)lon);
+            /*
+             * An all-zero or out-of-range fix means the modem has not got one
+             * yet; storing it would put 0,0 on the screen as if it were real.
+             */
+            bool plausible = lat >= -90.0f && lat <= 90.0f && lon >= -180.0f && lon <= 180.0f &&
+                             (lat != 0.0f || lon != 0.0f);
+            if (plausible) {
+                vs_lock();
+                vs_uds_t *u = vs_uds();
+                u->gps_valid = true;
+                u->gps_lat = (double)lat;
+                u->gps_lon = (double)lon;
+                u->gps_ts_us = esp_timer_get_time();
+                vs_unlock();
+            }
+            snprintf(out, outlen, "GPS lat %.6f lon %.6f%s (coarse refresh, minutes)", (double)lat,
+                     (double)lon, plausible ? "" : " (no fix)");
+            return true;
+        }
+        if (d->did == 0x0296 && n >= 3 && is_printable_ascii(p, n)) {
+            /* Serving network, ASCII "MCC MNC". Not the SIM's home network. */
+            vs_lock();
+            vs_uds_t *u = vs_uds();
+            ascii_line(u->plmn, sizeof(u->plmn), p, n);
+            u->plmn_ts_us = esp_timer_get_time();
+            vs_unlock();
+            char txt[32];
+            ascii_line(txt, sizeof(txt), p, n);
+            snprintf(out, outlen, "serving PLMN \"%s\"", txt);
             return true;
         }
         if (d->did == 0x0297 && n >= 1) {
+            vs_lock();
+            vs_uds_t *u = vs_uds();
+            u->cell_signal_valid = true;
+            u->cell_signal = (double)p[0];
+            u->cell_signal_ts_us = esp_timer_get_time();
+            vs_unlock();
             snprintf(out, outlen, "signal/service presence %u (0 = de-registered, 141 = reacquire)", p[0]);
             return true;
         }

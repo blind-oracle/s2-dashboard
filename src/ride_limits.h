@@ -23,6 +23,10 @@ extern "C" {
 #define RIDE_STALE_FAST_US     2000000LL
 #define RIDE_STALE_ENERGY_US   5000000LL     /* 0x186 runs at ~1.8 Hz */
 #define RIDE_STALE_SOH_US    300000000LL     /* UDS-polled, minutes apart */
+#define RIDE_STALE_SLOW_US     5000000LL     /* cells, charge, pack temperatures */
+#define RIDE_STALE_MUX_US     10000000LL     /* the 0x163 temperature mux, latched per selector */
+#define RIDE_STALE_TYRE_US   300000000LL     /* TPMS reports rarely, and only when rolling */
+#define RIDE_STALE_GPS_US    900000000LL     /* the TCU position refreshes every few minutes */
 
 /*
  * The window a 0x181 pair must fall in to be believable, from the database's

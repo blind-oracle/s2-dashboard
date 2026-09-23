@@ -314,10 +314,45 @@ menu "S2 Dashboard (LiveWire S2 CAN logger)"
         config S2_DISPLAY_SCREENS
             int "Number of screens the button cycles through"
             range 1 8
-            default 4
+            default 5
             depends on S2_DISPLAY_ENABLE
             help
-                Screen 1 shows the ride data; the rest are placeholders for now.
+                Five are drawn: ride, battery, thermal, chassis and telematics.
+                Anything above that is a numbered placeholder.
+
+        choice
+            prompt "Tyre pressure unit"
+            default S2_DISPLAY_PRESSURE_PSI
+            depends on S2_DISPLAY_ENABLE
+            help
+                The bus reports tyre pressure in kPa; this only changes how it is
+                displayed.
+
+            config S2_DISPLAY_PRESSURE_PSI
+                bool "PSI"
+
+            config S2_DISPLAY_PRESSURE_BAR
+                bool "bar"
+
+            config S2_DISPLAY_PRESSURE_KPA
+                bool "kPa, as broadcast"
+
+        endchoice
+
+        config S2_ACCEL_COUNTS_PER_G
+            int "IMU scale: counts per g"
+            range 100 32000
+            default 7760
+            depends on S2_DISPLAY_ENABLE
+            help
+                0x122 reports acceleration in raw counts. The vertical axis sits
+                near -7760 counts at rest, which is 1 g, so that is the scale
+                used to show the longitudinal axis in g.
+
+                Treat the result as an estimate. The database records that the
+                longitudinal channel did not correlate with measured vehicle
+                acceleration across 2469 samples, so even the axis assignment is
+                unproven. The raw count is shown alongside for that reason.
 
         choice
             prompt "What cycles the screens"

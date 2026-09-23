@@ -45,7 +45,7 @@
 #define Y_TORQUE    140
 #define Y_VOLTS     172
 #define Y_ENERGY    204
-#define Y_SOH       236
+#define Y_RPM       236
 #define Y_DOTS      266
 /*
  * Fixed anchors so a value changing length never shifts the row. Chosen so the
@@ -237,12 +237,195 @@ static void render_ride_screen(gfx_t *g, const dash_data_t *d)
         draw_row(g, Y_ENERGY, buf, "kWh", d->energy_state);
     }
 
-    /* State of health: UDS-only, so a placeholder is the normal passive-tap state. */
-    if (d->soh_state == FIELD_MISSING) {
-        gfx_text_center(g, CX, Y_SOH, d->uds_enabled ? "SOH --%" : "SOH n/a", 2, C_DIM);
+    /* Motor speed. State of health moved to the battery screen: it is UDS-only
+     * and changes over months, so it does not belong on the ride screen. */
+    if (d->rpm_state == FIELD_MISSING) {
+        draw_row(g, Y_RPM, "-----", "rpm", d->rpm_state);
     } else {
-        snprintf(buf, sizeof(buf), "SOH %d%%", (int)(clampd(d->soh_pct, 0.0, 100.0) + 0.5));
-        gfx_text_center(g, CX, Y_SOH, buf, 2, d->soh_state == FIELD_STALE ? C_DIM : C_LABEL);
+        snprintf(buf, sizeof(buf), "%d", (int)clampd(d->motor_rpm, -99999.0, 99999.0));
+        draw_row(g, Y_RPM, buf, "rpm", d->rpm_state);
+    }
+}
+
+/* ------------------------------------------------------- detail screens --- */
+
+/*
+ * Screens 2 to 5 are label/value lists rather than gauges, so they share one
+ * layout: a title, a rule, then rows 29 px apart. A row is either one value or
+ * a min/avg/max triple, which takes the height of two.
+ */
+#define L_MARGIN     10
+#define L_Y_TITLE    14
+#define L_Y_RULE     38
+#define L_Y_FIRST    50
+#define L_ROW_H      29
+#define L_LABEL_SC    1
+#define L_VALUE_SC    2
+
+static int list_y(int row)
+{
+    return L_Y_FIRST + row * L_ROW_H;
+}
+
+static void list_title(gfx_t *g, const char *title)
+{
+    gfx_text_center(g, g->w / 2, L_Y_TITLE, title, 2, C_POWER);
+    gfx_hline(g, L_MARGIN, L_Y_RULE, g->w - 2 * L_MARGIN, C_TRACK);
+}
+
+/* One label on the left, one value right-aligned. */
+static void list_row(gfx_t *g, int row, const char *label, const char *value, field_state_t st)
+{
+    int y = list_y(row);
+    gfx_text(g, L_MARGIN, y + 4, label, L_LABEL_SC, C_LABEL);
+    gfx_text_right(g, g->w - L_MARGIN, y, value, L_VALUE_SC, value_colour(st));
+}
+
+/*
+ * A labelled triple, laid out over three lines so each column heading sits
+ * directly above its own number. Occupies the height of two rows.
+ */
+static void list_triple(gfx_t *g, int row, const char *label, const char *ha, const char *hb,
+                        const char *hc, const char *a, const char *b, const char *c,
+                        field_state_t st)
+{
+    int y = list_y(row);
+    uint16_t col = value_colour(st);
+
+    gfx_text(g, L_MARGIN, y, label, L_LABEL_SC, C_LABEL);
+
+    /* Headings and values share the same three anchors. */
+    gfx_text(g, L_MARGIN, y + 12, ha, L_LABEL_SC, C_DIM);
+    gfx_text_center(g, g->w / 2, y + 12, hb, L_LABEL_SC, C_DIM);
+    gfx_text_right(g, g->w - L_MARGIN, y + 12, hc, L_LABEL_SC, C_DIM);
+
+    gfx_text(g, L_MARGIN, y + 24, a, L_VALUE_SC, col);
+    gfx_text_center(g, g->w / 2, y + 24, b, L_VALUE_SC, col);
+    gfx_text_right(g, g->w - L_MARGIN, y + 24, c, L_VALUE_SC, col);
+}
+
+/* Format a value, or dashes of the same shape when it has never been seen. */
+static void fmt(char *buf, size_t len, field_state_t st, const char *dashes, const char *spec,
+                double v)
+{
+    if (st == FIELD_MISSING) {
+        snprintf(buf, len, "%s", dashes);
+    } else {
+        snprintf(buf, len, spec, v);
+    }
+}
+
+const char *screens_pressure(double kpa, double *out)
+{
+#if CONFIG_S2_DISPLAY_PRESSURE_BAR
+    *out = kpa * 0.01;
+    return "bar";
+#elif CONFIG_S2_DISPLAY_PRESSURE_KPA
+    *out = kpa;
+    return "kPa";
+#else
+    *out = kpa * 0.1450377;   /* PSI */
+    return "PSI";
+#endif
+}
+
+static void render_battery_screen(gfx_t *g, const dash_data_t *d)
+{
+    char a[12], b[12], c[12];
+    list_title(g, "BATTERY");
+
+    fmt(a, sizeof(a), d->cell_state, "----", "%.0f", d->cell_mv_min);
+    fmt(b, sizeof(b), d->cell_state, "----", "%.0f", d->cell_mv_avg);
+    fmt(c, sizeof(c), d->cell_state, "----", "%.0f", d->cell_mv_max);
+    list_triple(g, 0, "CELL mV", "MIN", "AVG", "MAX", a, b, c, d->cell_state);
+
+    /* Charge-positive as the bike reports it, so a discharge reads negative. */
+    fmt(a, sizeof(a), d->current_state, "---.-", "%.1f", d->pack_amps);
+    list_row(g, 2, "PACK CURRENT  A", a, d->current_state);
+
+    fmt(a, sizeof(a), d->soc_state, "--", "%.0f", d->soc_pct);
+    list_row(g, 3, "STATE OF CHARGE  %", a, d->soc_state);
+
+    if (d->soh_state == FIELD_MISSING) {
+        list_row(g, 4, "STATE OF HEALTH  %", d->uds_enabled ? "--" : "n/a", d->soh_state);
+    } else {
+        fmt(a, sizeof(a), d->soh_state, "--", "%.0f", d->soh_pct);
+        list_row(g, 4, "STATE OF HEALTH  %", a, d->soh_state);
+    }
+    if (!d->uds_enabled) {
+        gfx_text_center(g, g->w / 2, list_y(5) + 8, "HEALTH NEEDS UDS POLLING", 1, C_DIM);
+    }
+}
+
+static void render_thermal_screen(gfx_t *g, const dash_data_t *d)
+{
+    char a[12], b[12], c[12];
+    list_title(g, "THERMAL");
+
+    fmt(a, sizeof(a), d->pack_temp_state, "--", "%.0f", d->pack_t_min);
+    fmt(b, sizeof(b), d->pack_temp_state, "--", "%.0f", d->pack_t_avg);
+    fmt(c, sizeof(c), d->pack_temp_state, "--", "%.0f", d->pack_t_max);
+    list_triple(g, 0, "PACK C", "MIN", "AVG", "MAX", a, b, c, d->pack_temp_state);
+
+    fmt(a, sizeof(a), d->coolant_state, "--", "%.0f", d->coolant_c);
+    list_row(g, 2, "COOLANT  C", a, d->coolant_state);
+
+    fmt(a, sizeof(a), d->inverter_state, "--", "%.0f", d->inverter_c);
+    list_row(g, 3, "INVERTER  C", a, d->inverter_state);
+
+    fmt(a, sizeof(a), d->ambient_state, "--", "%.0f", d->ambient_c);
+    list_row(g, 4, "AMBIENT  C", a, d->ambient_state);
+
+    gfx_text_center(g, g->w / 2, list_y(5) + 8, "NO CHARGER TEMP ON THE BUS", 1, C_DIM);
+}
+
+static void render_chassis_screen(gfx_t *g, const dash_data_t *d)
+{
+    char a[12], b[12], c[12];
+    double per_g = (double)CONFIG_S2_ACCEL_COUNTS_PER_G;
+    list_title(g, "CHASSIS");
+
+    /* Longitudinal axis: the extremes seen since boot either side of now. */
+    fmt(a, sizeof(a), d->accel_state, "--.-", "%.2f", d->accel_max_neg / per_g);
+    fmt(b, sizeof(b), d->accel_state, "--.-", "%.2f", d->accel_now / per_g);
+    fmt(c, sizeof(c), d->accel_state, "--.-", "%.2f", d->accel_max_pos / per_g);
+    list_triple(g, 0, "LONGITUDINAL ~g", "-MAX", "NOW", "+MAX", a, b, c, d->accel_state);
+
+    fmt(a, sizeof(a), d->accel_state, "-----", "%.0f", d->accel_now);
+    list_row(g, 2, "RAW COUNTS", a, d->accel_state);
+
+    double p;
+    const char *unit = screens_pressure(d->tyre_front_kpa, &p);
+    char label[24];
+    fmt(a, sizeof(a), d->tyre_state, "--.-", "%.1f", p);
+    snprintf(label, sizeof(label), "TYRE FRONT  %s", unit);
+    list_row(g, 3, label, a, d->tyre_state);
+
+    screens_pressure(d->tyre_rear_kpa, &p);
+    fmt(a, sizeof(a), d->tyre_state, "--.-", "%.1f", p);
+    snprintf(label, sizeof(label), "TYRE REAR  %s", unit);
+    list_row(g, 4, label, a, d->tyre_state);
+}
+
+static void render_telematics_screen(gfx_t *g, const dash_data_t *d)
+{
+    char a[16];
+    list_title(g, "TELEMATICS");
+
+    fmt(a, sizeof(a), d->gps_state, "---.-----", "%.5f", d->gps_lat);
+    list_row(g, 0, "LATITUDE", a, d->gps_state);
+
+    fmt(a, sizeof(a), d->gps_state, "---.-----", "%.5f", d->gps_lon);
+    list_row(g, 1, "LONGITUDE", a, d->gps_state);
+
+    fmt(a, sizeof(a), d->cell_signal_state, "---", "%.0f", d->cell_signal);
+    list_row(g, 2, "CELL SIGNAL", a, d->cell_signal_state);
+
+    list_row(g, 3, "NETWORK", d->plmn[0] ? d->plmn : "---", d->cell_signal_state);
+
+    if (!d->uds_enabled) {
+        gfx_text_center(g, g->w / 2, list_y(4) + 8, "THIS SCREEN NEEDS UDS", 1, C_DIM);
+        gfx_text_center(g, g->w / 2, list_y(5) + 2, "WITH TCU POLLING ON", 1, C_DIM);
     }
 }
 
@@ -259,10 +442,13 @@ static void render_empty_screen(gfx_t *g, unsigned screen)
 void screens_render(gfx_t *g, unsigned screen, unsigned count, const dash_data_t *d)
 {
     gfx_fill(g, C_BG);
-    if (screen == 0) {
-        render_ride_screen(g, d);
-    } else {
-        render_empty_screen(g, screen);
+    switch (screen) {
+    case 0: render_ride_screen(g, d); break;
+    case 1: render_battery_screen(g, d); break;
+    case 2: render_thermal_screen(g, d); break;
+    case 3: render_chassis_screen(g, d); break;
+    case 4: render_telematics_screen(g, d); break;
+    default: render_empty_screen(g, screen); break;
     }
     draw_dots(g, screen, count);
 }

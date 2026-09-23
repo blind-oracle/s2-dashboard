@@ -205,13 +205,15 @@ board.
 | `S2_DISPLAY_MIRROR_X` / `_MIRROR_Y` | n / n | extra mirroring on top of the rotation |
 | `S2_DISPLAY_REFRESH_HZ` | 10 | full-frame redraw rate |
 | `S2_DISPLAY_BAND_ROWS` | 40 | rows per SPI transfer |
-| `S2_DISPLAY_SCREENS` | 4 | screens the button cycles through |
+| `S2_DISPLAY_SCREENS` | 5 | screens the button cycles through; five are drawn |
 | What cycles the screens | handlebar button | or a GPIO switch, or nothing |
 | Which handlebar button | info / scroll | horn, high beam, either brake, hazards, cruise arm |
 | `S2_DISPLAY_BUTTON_GPIO` / `_ACTIVE_LOW` | 6 / y | only when the GPIO switch is selected |
 | `S2_DISPLAY_BL_PWM` / `_BRIGHTNESS` | y / 90 | LEDC-dimmed backlight |
 | `S2_DISPLAY_POWER_FULL_SCALE_KW` / `_REGEN_FULL_SCALE_KW` | 70 / 20 | gauge ends |
 | `S2_TORQUE_COUNTS_PER_NM_X100` | 335 | torque scale, hundredths (3.35 counts/Nm) |
+| Tyre pressure unit | PSI | or bar, or kPa as broadcast |
+| `S2_ACCEL_COUNTS_PER_G` | 7760 | IMU scale, see the caveat above |
 | `S2_BLE_ENABLE` | y | advertise the telemetry services over Bluetooth LE |
 | `S2_BLE_DEVICE_NAME` | `S2-DASH` | name shown in the phone's scan list |
 | `S2_BLE_NUS_ENABLE` | y | also expose the Nordic UART Service (plain text) |
@@ -226,7 +228,11 @@ board.
 
 ## What the display shows
 
-**Screen 1 (ride screen)** shows all five quantities at once:
+Five screens, cycled by the bike's own info/scroll button. Below the rows, one
+dot per screen marks where you are, and the new screen is noted in the serial
+log.
+
+**Screen 1, ride** is the one to leave it on while moving:
 
 | Element | Source | Notes |
 |---|---|---|
@@ -234,13 +240,23 @@ board.
 | `nnn ~Nm` | 0x161 `torque_delivered` | the `~` marks it as an estimate, see the caveat below |
 | `nnn.n Vdc` | 0x181 `pack_voltage` | 12-bit word, 1 V/count |
 | `nn.nn kWh` | 0x186 `trip_energy_consumed_wh` | the bike's own trip meter: energy used since **key-on**, which it also zeroes at each key cycle and clamps at 0 while charging |
-| `SOH nn%` | UDS RESS DID 0x020E | UDS-only, see the caveat below |
+| `nnnn rpm` | 0x160 `motor_rpm` | |
 
-**Screens 2 to 4 are deliberately empty** placeholders (`SCREEN 2 / (empty)`)
-for future content. Below the rows, one dot per screen marks where you are.
+**Screen 2, battery**: cell voltage min/avg/max (0x182), pack current (0x181,
+charge-positive as the bike reports it, so a discharge reads negative), state of
+charge (0x185) and state of health. State of health lives here rather than on
+the ride screen because it is UDS-only and moves over months.
 
-Screens advance on a press of the bike's own info/scroll button, and the new
-screen is noted in the serial log. See the next section.
+**Screen 3, thermal**: pack temperature min/avg/max across the three 0x183
+sensors, then coolant and inverter from the 0x163 temperature mux, and ambient.
+
+**Screen 4, chassis**: longitudinal acceleration as the extremes seen since boot
+either side of the current value, in estimated g and in raw counts, then tyre
+pressures in the unit chosen in menuconfig.
+
+**Screen 5, telematics**: GPS latitude and longitude, cellular signal and the
+serving network. Every value here is UDS-only, so the screen says so when UDS
+polling is off, which is the default.
 
 **Missing and stale data are visually distinct**, because a dashboard that
 invents numbers is worse than one that admits it cannot read them:
@@ -248,12 +264,43 @@ invents numbers is worse than one that admits it cannot read them:
 - **Never seen** shows dashes in the dimmest grey (`---`, `----`, `---.-`,
   `--.--`) with the unit dimmed too, and the ring draws no fill at all. Dashes,
   never zeros: `0.0 kW` is a legitimate reading.
-- **Gone stale** (older than 2 s, or 5 s for the slower energy frame) keeps the last
-  value but greys it, the ring redraws dim at the last angle, and the header word
-  changes from `POWER` to `STALE` - the only text on screen that changes wording.
-- **State of health** reads `SOH n/a` when UDS polling is off (the normal
-  passive-tap build) and `SOH --%` when it is on but the battery has not answered
-  yet, so the two reasons are distinguishable.
+- **Gone stale** keeps the last value but greys it, the ring redraws dim at the
+  last angle, and the header word changes from `POWER` to `STALE` - the only
+  text on screen that changes wording. The window matches how often each frame
+  actually arrives: 2 s for the fast ride values, 5 s for cells and
+  temperatures, 10 s for the latched mux channels, 5 minutes for tyre pressures,
+  and 15 minutes for the GPS fix.
+- **State of health** reads `n/a` when UDS polling is off and `--` when it is on
+  but the battery has not answered yet, so the two reasons are distinguishable.
+
+### What is not on these screens, and why
+
+Three things asked for turned out not to be available as asked:
+
+- **Charger temperature is not broadcast.** The onboard charger reports a
+  thermal value over UDS (OBC DID 0201) but the database records its scale and
+  offset as still unknown, so any number shown would be invented. What the
+  thermal screen does show instead is the real 0x163 mux: selector 1 is the
+  motor/coolant loop and selector 0 is the inverter winding. Selectors 2 to 5
+  are a constant limit table in every capture, so they are ignored.
+- **Cell temperatures are not reported per cell.** The bus carries three pack
+  sensors on 0x183, so the min/avg/max is across those three, not across cells.
+  The pack's own min/mean/max does exist over UDS on RESS DID 0x020D if you ever
+  want the real thing.
+- **GPS is not on the broadcast bus at all.** Frame 0x394 looks like a position
+  slot but is all-zero on every capture. The only source is the TCU over UDS
+  (DID 0200, two big-endian float32), which needs `S2_UDS_ENABLE` **and**
+  `S2_UDS_POLL_TCU`, and UDS transmits on the bike's bus. TCU polling is off by
+  default because a position in a shared log is privacy-sensitive.
+
+### Why the longitudinal acceleration is marked with a tilde
+
+0x122 is an accelerometer: the vertical axis rests near -7760 counts, which is
+1 g, and that is the scale `S2_ACCEL_COUNTS_PER_G` uses. But the database records
+that the longitudinal channel did **not** correlate with measured vehicle
+acceleration across 2469 paired samples, so even the axis assignment is
+unproven. The raw count is shown next to the g figure for that reason. Treat the
+number as an indication, not a measurement.
 
 ### Why torque is an estimate
 

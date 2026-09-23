@@ -1,6 +1,7 @@
 #include "display.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -268,26 +269,99 @@ static double filter(double *state, bool *have, double raw, double dt_s, double 
     return *state;
 }
 
+/*
+ * The 0x163 temperature mux cycles one selector per frame at 50 Hz, and the
+ * decoder only ever holds the most recent pair. Polling it from here at the
+ * refresh rate therefore catches each channel now and then rather than every
+ * time, so the two channels worth reading are latched with their own
+ * timestamps. RIDE_STALE_MUX_US is generous for that reason.
+ */
+static double s_coolant_c, s_inverter_c;
+static int64_t s_coolant_ts, s_inverter_ts;
+static bool s_coolant_seen, s_inverter_seen;
+
+/* Longitudinal extremes since boot. */
+static double s_accel_max_pos, s_accel_max_neg;
+static bool s_accel_seen;
+
+/* min/avg/max across however many of the three pack sensors are reporting. */
+static unsigned temp_stats(const double *v, const bool *ok, unsigned n, double *mn, double *av,
+                           double *mx)
+{
+    unsigned count = 0;
+    double sum = 0;
+    for (unsigned i = 0; i < n; i++) {
+        if (!ok[i]) {
+            continue;
+        }
+        if (count == 0 || v[i] < *mn) {
+            *mn = v[i];
+        }
+        if (count == 0 || v[i] > *mx) {
+            *mx = v[i];
+        }
+        sum += v[i];
+        count++;
+    }
+    if (count) {
+        *av = sum / count;
+    }
+    return count;
+}
+
 static void snapshot(dash_data_t *d, int64_t now, double dt_s)
 {
     memset(d, 0, sizeof(*d));
     d->uds_enabled = OPT_UDS;
 
-    double volts = 0, amps = 0, torque_counts = 0;
+    /* ---- one short locked region: copy scalars out, derive nothing here ---- */
+    double volts = 0, amps = 0, torque_counts = 0, used_wh = 0, soh = 0, rpm = 0;
     bool v_ok = false, i_ok = false, t_ok = false;
-    int64_t v_ts = 0, i_ts = 0, t_ts = 0;
-    double used_wh = 0;
+    int64_t v_ts = 0, i_ts = 0, t_ts = 0, rpm_ts = 0;
     bool energy_seen = false;
     int64_t energy_ts = 0;
+    bool rpm_seen = false;
     bool soh_ok = false;
-    double soh = 0;
     int64_t soh_ts = 0;
+
+    double cmin = 0, cavg = 0, cmax = 0;
+    bool cell_ok = false;
+    int64_t cell_ts = 0;
+    double soc = 0;
+    bool soc_ok = false;
+    int64_t soc_ts = 0;
+
+    double bt[3] = { 0, 0, 0 };
+    bool bt_ok[3] = { false, false, false };
+    int64_t bt_ts = 0;
+    double ambient = 0;
+    bool amb_ok = false;
+    int64_t amb_ts = 0;
+    double mux_sel = 0, mux_raw = 0;
+    bool mux_ok = false;
+    int64_t mux_ts = 0;
+
+    double accel = 0;
+    bool acc_ok = false;
+    int64_t acc_ts = 0;
+    double tyre_f = 0, tyre_r = 0;
+    bool tyre_ok = false;
+    int64_t tyre_ts = 0;
+
+    bool gps_ok = false;
+    double lat = 0, lon = 0;
+    int64_t gps_ts = 0;
+    bool sig_ok = false;
+    double sig = 0;
+    int64_t sig_ts = 0;
+    char plmn[VS_PLMN_MAX] = { 0 };
 
     vs_lock();
     const vs_signal_t *sv = vs_signal(S2_SIG_BATTERY_STATUS_181_pack_voltage);
     const vs_signal_t *si = vs_signal(S2_SIG_BATTERY_STATUS_181_pack_current);
     const vs_signal_t *st = vs_signal(S2_SIG_MOTOR_POWER_161_torque_delivered);
     const vs_signal_t *se = vs_signal(S2_SIG_HV_ENERGY_186_trip_energy_consumed_wh);
+    const vs_signal_t *sr = vs_signal(S2_SIG_SPEED_160_motor_rpm);
     if (sv && sv->valid) {
         volts = sv->value;
         v_ts = sv->ts_us;
@@ -296,10 +370,6 @@ static void snapshot(dash_data_t *d, int64_t now, double dt_s)
         amps = si->value;
         i_ts = si->ts_us;
     }
-    /*
-     * One plausibility rule for the gauge and the accumulator, so they can never
-     * disagree about whether a sample was real.
-     */
     bool pair_ok = sv && si && sv->valid && si->valid && ride_pack_sample_plausible(volts, amps);
     v_ok = pair_ok;
     i_ok = pair_ok;
@@ -309,15 +379,91 @@ static void snapshot(dash_data_t *d, int64_t now, double dt_s)
         t_ok = ride_torque_plausible(torque_counts);
     }
     if (se && se->valid) {
-        used_wh = se->value;          /* the bike's own trip meter, ~1 Wh/count */
+        used_wh = se->value;
         energy_ts = se->ts_us;
         energy_seen = true;
     }
+    if (sr && sr->valid) {
+        rpm = sr->value;
+        rpm_ts = sr->ts_us;
+        rpm_seen = true;
+    }
+
+    const vs_signal_t *c1 = vs_signal(S2_SIG_CELL_VOLTAGE_182_cell_v_min);
+    const vs_signal_t *c2 = vs_signal(S2_SIG_CELL_VOLTAGE_182_cell_v_avg);
+    const vs_signal_t *c3 = vs_signal(S2_SIG_CELL_VOLTAGE_182_cell_v_max);
+    if (c1 && c2 && c3 && c1->valid && c2->valid && c3->valid) {
+        cmin = c1->value;
+        cavg = c2->value;
+        cmax = c3->value;
+        cell_ok = true;
+        cell_ts = c1->ts_us < c3->ts_us ? c1->ts_us : c3->ts_us;
+    }
+    const vs_signal_t *ss = vs_signal(S2_SIG_SOC_185_state_of_charge);
+    if (ss && ss->valid) {
+        soc = ss->value;
+        soc_ts = ss->ts_us;
+        soc_ok = true;
+    }
+
+    const uint16_t temp_ids[3] = { S2_SIG_TEMPERATURES_183_batt_temp_1,
+                                   S2_SIG_TEMPERATURES_183_batt_temp_2,
+                                   S2_SIG_TEMPERATURES_183_batt_temp_3 };
+    for (unsigned k = 0; k < 3; k++) {
+        const vs_signal_t *tp = vs_signal(temp_ids[k]);
+        if (tp && tp->valid) {
+            bt[k] = tp->value;
+            bt_ok[k] = true;
+            if (tp->ts_us > bt_ts) {
+                bt_ts = tp->ts_us;
+            }
+        }
+    }
+    const vs_signal_t *sa = vs_signal(S2_SIG_TEMPERATURES_183_ambient_temp);
+    if (sa && sa->valid) {
+        ambient = sa->value;
+        amb_ts = sa->ts_us;
+        amb_ok = true;
+    }
+    const vs_signal_t *ms = vs_signal(S2_SIG_BATTERY_POWER_163_temp_mux_sel);
+    const vs_signal_t *mr = vs_signal(S2_SIG_BATTERY_POWER_163_temp_mux_raw);
+    if (ms && mr && ms->valid && mr->valid) {
+        mux_sel = ms->value;
+        mux_raw = mr->value;
+        mux_ts = mr->ts_us;
+        mux_ok = true;
+    }
+
+    const vs_signal_t *ax = vs_signal(S2_SIG_IMU_ACCEL_122_accel_longitudinal);
+    if (ax && ax->valid) {
+        accel = ax->value;
+        acc_ts = ax->ts_us;
+        acc_ok = true;
+    }
+    const vs_signal_t *tf = vs_signal(S2_SIG_TYRE_PRESSURE_33A_tyre_pressure_front);
+    const vs_signal_t *tr = vs_signal(S2_SIG_TYRE_PRESSURE_33A_tyre_pressure_rear);
+    if (tf && tr && tf->valid && tr->valid) {
+        tyre_f = tf->value;
+        tyre_r = tr->value;
+        tyre_ok = true;
+        tyre_ts = tf->ts_us < tr->ts_us ? tf->ts_us : tr->ts_us;
+    }
+
     const vs_uds_t *u = vs_uds();
     soh_ok = u->soh_valid;
     soh = u->soh_pct;
     soh_ts = u->soh_ts_us;
+    gps_ok = u->gps_valid;
+    lat = u->gps_lat;
+    lon = u->gps_lon;
+    gps_ts = u->gps_ts_us;
+    sig_ok = u->cell_signal_valid;
+    sig = u->cell_signal;
+    sig_ts = u->cell_signal_ts_us;
+    memcpy(plmn, u->plmn, sizeof(plmn));
     vs_unlock();
+
+    /* ------------------------ everything below is derivation ------------------------ */
 
     bool power_ok = v_ok && i_ok;
     int64_t power_ts = v_ts < i_ts ? v_ts : i_ts;
@@ -339,8 +485,88 @@ static void snapshot(dash_data_t *d, int64_t now, double dt_s)
     d->energy_state = ride_freshness(energy_seen, energy_ts, now, RIDE_STALE_ENERGY_US);
     d->used_kwh = used_wh / 1000.0;
 
+    d->rpm_state = ride_freshness(rpm_seen, rpm_ts, now, RIDE_STALE_FAST_US);
+    d->motor_rpm = rpm;
+
+    /* ---- battery ---- */
+    d->cell_state = ride_freshness(cell_ok, cell_ts, now, RIDE_STALE_SLOW_US);
+    d->cell_mv_min = cmin;
+    d->cell_mv_avg = cavg;
+    d->cell_mv_max = cmax;
+
+    d->current_state = ride_freshness(i_ok, i_ts, now, RIDE_STALE_FAST_US);
+    d->pack_amps = amps;
+
+    d->soc_state = ride_freshness(soc_ok, soc_ts, now, RIDE_STALE_SLOW_US);
+    d->soc_pct = soc;
+
     d->soh_state = ride_freshness(soh_ok, soh_ts, now, RIDE_STALE_SOH_US);
     d->soh_pct = soh;
+
+    /* ---- thermal ---- */
+    double tmin = 0, tavg = 0, tmax = 0;
+    unsigned n_temps = temp_stats(bt, bt_ok, 3, &tmin, &tavg, &tmax);
+    d->pack_temp_state = ride_freshness(n_temps > 0, bt_ts, now, RIDE_STALE_SLOW_US);
+    d->pack_t_min = tmin;
+    d->pack_t_avg = tavg;
+    d->pack_t_max = tmax;
+
+    /*
+     * Latch the two mux channels that carry real readings. Selectors 2 to 5 are
+     * a constant limit table in every capture, so they are ignored rather than
+     * shown as temperatures.
+     */
+    if (mux_ok) {
+        int sel = (int)(mux_sel + 0.5);
+        if (sel == 0) {
+            s_inverter_c = mux_raw;
+            s_inverter_ts = mux_ts;
+            s_inverter_seen = true;
+        } else if (sel == 1) {
+            s_coolant_c = mux_raw;
+            s_coolant_ts = mux_ts;
+            s_coolant_seen = true;
+        }
+    }
+    d->coolant_state = ride_freshness(s_coolant_seen, s_coolant_ts, now, RIDE_STALE_MUX_US);
+    d->coolant_c = s_coolant_c;
+    d->inverter_state = ride_freshness(s_inverter_seen, s_inverter_ts, now, RIDE_STALE_MUX_US);
+    d->inverter_c = s_inverter_c;
+
+    d->ambient_state = ride_freshness(amb_ok, amb_ts, now, RIDE_STALE_SLOW_US);
+    d->ambient_c = ambient;
+
+    /* ---- chassis ---- */
+    if (acc_ok) {
+        if (!s_accel_seen) {
+            s_accel_seen = true;
+            s_accel_max_pos = accel;
+            s_accel_max_neg = accel;
+        }
+        if (accel > s_accel_max_pos) {
+            s_accel_max_pos = accel;
+        }
+        if (accel < s_accel_max_neg) {
+            s_accel_max_neg = accel;
+        }
+    }
+    d->accel_state = ride_freshness(acc_ok, acc_ts, now, RIDE_STALE_FAST_US);
+    d->accel_now = accel;
+    d->accel_max_pos = s_accel_max_pos;
+    d->accel_max_neg = s_accel_max_neg;
+
+    d->tyre_state = ride_freshness(tyre_ok, tyre_ts, now, RIDE_STALE_TYRE_US);
+    d->tyre_front_kpa = tyre_f;
+    d->tyre_rear_kpa = tyre_r;
+
+    /* ---- telematics ---- */
+    d->gps_state = ride_freshness(gps_ok, gps_ts, now, RIDE_STALE_GPS_US);
+    d->gps_lat = lat;
+    d->gps_lon = lon;
+    d->cell_signal_state = ride_freshness(sig_ok, sig_ts, now, RIDE_STALE_SOH_US);
+    d->cell_signal = sig;
+    snprintf(d->plmn, sizeof(d->plmn), "%s", plmn);
+    d->plmn[sizeof(d->plmn) - 1] = '\0';
 }
 
 /* -------------------------------------------------------------------- task --- */
