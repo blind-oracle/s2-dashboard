@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "log_writer.h"
+#include "ride_limits.h"
 #include "s2_overlay.h"
 #include "sdkconfig.h"
 #include "uds_client.h"
@@ -160,9 +161,10 @@ static void print_summary(int64_t now)
     double i = sig_value(S2_SIG_BATTERY_STATUS_181_pack_current, &iv);
     add_sig(&l, "pack", S2_SIG_BATTERY_STATUS_181_pack_voltage);
     add_sig(&l, "current", S2_SIG_BATTERY_STATUS_181_pack_current);
-    if (vv && iv) {
-        /* Pack current is charge-positive, so power OUT of the pack is -(V * I). */
-        line_add(&l, "  power_out=%.2f kW", -(v * i) / 1000.0);
+    /* Same helper and same plausibility rule as the screen and BLE, so the log
+     * cannot print a power figure the screen refuses to show. */
+    if (vv && iv && ride_pack_sample_plausible(v, i)) {
+        line_add(&l, "  power_out=%.2f kW", ride_power_kw(v, i));
     }
     add_sig(&l, "packV_163", S2_SIG_BATTERY_POWER_163_pack_voltage_163);
     add_sig(&l, "cell_min", S2_SIG_CELL_VOLTAGE_182_cell_v_min);

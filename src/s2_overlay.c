@@ -13,6 +13,8 @@
 
 #include "dbc_decode.h"
 #include "log_writer.h"
+#include "ride_limits.h"
+#include "s2_dbc_gen.h"
 #include "vehicle_state.h"
 
 /* ------------------------------------------------------------------------- */
@@ -552,11 +554,66 @@ static void track_uncovered(const s2_message_def_t *msg, const can_frame_t *f)
     log_tline("0x%03X %s: undocumented bytes %s%s", msg->id, msg->name, txt, first ? " (first)" : "");
 }
 
+/*
+ * Record the since-boot extremes, once per frame.
+ *
+ * This has to happen here rather than in the display, because the display reads
+ * vehicle state ten times a second while these frames arrive far faster: most
+ * samples are overwritten before it ever looks, and the one it sees is an
+ * arbitrary instant rather than the peak. That is the whole reason a glanced
+ * power figure reads low on a short burst.
+ *
+ * Runs on the decoder task with the vehicle-state lock already held, after
+ * every signal of this frame has been written, so reading them back here gives
+ * a consistent set from this one frame.
+ *
+ * Gated on the frame's end-to-end check: a corrupt frame that slipped through
+ * would otherwise leave a false peak that never clears.
+ */
+static void feed_extremes(const s2_message_def_t *msg, bool e2e_ok)
+{
+    if (!e2e_ok) {
+        return;
+    }
+    ride_extremes_t *e = vs_extremes();
+    if (!e) {
+        return;
+    }
+
+    switch (msg->id) {
+    case 0x181: {
+        const vs_signal_t *v = vs_signal(S2_SIG_BATTERY_STATUS_181_pack_voltage);
+        const vs_signal_t *i = vs_signal(S2_SIG_BATTERY_STATUS_181_pack_current);
+        if (v && i && v->valid && i->valid) {
+            ride_extremes_pack(e, v->value, i->value);
+        }
+        break;
+    }
+    case 0x161: {
+        const vs_signal_t *t = vs_signal(S2_SIG_MOTOR_POWER_161_torque_delivered);
+        if (t && t->valid) {
+            ride_extremes_torque(e, t->value);
+        }
+        break;
+    }
+    case 0x122: {
+        const vs_signal_t *a = vs_signal(S2_SIG_IMU_ACCEL_122_accel_longitudinal);
+        if (a && a->valid) {
+            ride_extremes_accel(e, a->value);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 void s2_overlay_on_frame(const s2_message_def_t *msg, const can_frame_t *f, bool e2e_ok)
 {
     if (!s_masks_ready) {
         build_masks();
     }
+    feed_extremes(msg, e2e_ok);
     const uint8_t *d = f->data;
     int64_t now = f->timestamp_us;
 

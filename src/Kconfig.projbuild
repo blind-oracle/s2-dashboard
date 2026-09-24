@@ -314,11 +314,11 @@ menu "S2 Dashboard (LiveWire S2 CAN logger)"
         config S2_DISPLAY_SCREENS
             int "Number of screens the button cycles through"
             range 1 8
-            default 5
+            default 6
             depends on S2_DISPLAY_ENABLE
             help
-                Five are drawn: ride, battery, thermal, chassis and telematics.
-                Anything above that is a numbered placeholder.
+                Six are drawn: ride, battery, thermal, chassis, telematics and
+                peaks. Anything above that is a numbered placeholder.
 
         choice
             prompt "Tyre pressure unit"
@@ -338,6 +338,25 @@ menu "S2 Dashboard (LiveWire S2 CAN logger)"
                 bool "kPa, as broadcast"
 
         endchoice
+
+        config S2_DISPLAY_POWER_TAU_MS
+            int "Smoothing on the power figure (ms)"
+            range 0 2000
+            default 200
+            depends on S2_DISPLAY_ENABLE
+            help
+                Time constant of the low-pass filter on the ride screen's power
+                number. Longer is steadier to read; shorter follows short events
+                more honestly.
+
+                At the default 200 ms the display shows about 56% of a step
+                after 0.2 s and 87% after 0.5 s, reaching within 2% only after a
+                second. That is why a glance during a one-second burst reads
+                low. Set 0 to disable smoothing entirely.
+
+                The peaks screen is not affected either way: those figures are
+                captured one CAN frame at a time in the decoder, so they catch
+                what the display never sees.
 
         config S2_ACCEL_COUNTS_PER_G
             int "IMU scale: counts per g"

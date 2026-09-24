@@ -205,7 +205,7 @@ board.
 | `S2_DISPLAY_MIRROR_X` / `_MIRROR_Y` | n / n | extra mirroring on top of the rotation |
 | `S2_DISPLAY_REFRESH_HZ` | 10 | full-frame redraw rate |
 | `S2_DISPLAY_BAND_ROWS` | 40 | rows per SPI transfer |
-| `S2_DISPLAY_SCREENS` | 5 | screens the button cycles through; five are drawn |
+| `S2_DISPLAY_SCREENS` | 6 | screens the button cycles through; six are drawn |
 | What cycles the screens | handlebar button | or a GPIO switch, or nothing |
 | Which handlebar button | info / scroll | horn, high beam, either brake, hazards, cruise arm |
 | `S2_DISPLAY_BUTTON_GPIO` / `_ACTIVE_LOW` | 6 / y | only when the GPIO switch is selected |
@@ -214,6 +214,7 @@ board.
 | `S2_TORQUE_COUNTS_PER_NM_X100` | 335 | torque scale, hundredths (3.35 counts/Nm) |
 | Tyre pressure unit | PSI | or bar, or kPa as broadcast |
 | `S2_ACCEL_COUNTS_PER_G` | 7760 | IMU scale, see the caveat above |
+| `S2_DISPLAY_POWER_TAU_MS` | 200 | smoothing on the power figure; 0 disables it |
 | `S2_BLE_ENABLE` | y | advertise the telemetry services over Bluetooth LE |
 | `S2_BLE_DEVICE_NAME` | `S2-DASH` | name shown in the phone's scan list |
 | `S2_BLE_NUS_ENABLE` | y | also expose the Nordic UART Service (plain text) |
@@ -260,6 +261,11 @@ pressures in the unit chosen in menuconfig.
 serving network. Every value here is UDS-only, so the screen says so when UDS
 polling is off, which is the default.
 
+**Screen 6, peaks**: the largest values seen since the board last restarted.
+Power at both ends, regenerating and driving; pack current at both ends,
+charging and discharging; and the highest torque. Read the next section for why
+these are not simply the largest numbers the ride screen showed you.
+
 **Missing and stale data are visually distinct**, because a dashboard that
 invents numbers is worse than one that admits it cannot read them:
 
@@ -303,6 +309,52 @@ that the longitudinal channel did **not** correlate with measured vehicle
 acceleration across 2469 paired samples, so even the axis assignment is
 unproven. The raw count is shown next to the g figure for that reason. Treat the
 number as an indication, not a measurement.
+
+### Why a glanced power figure reads low, and where to find the real one
+
+The ride screen's power number is honest but lossy, in two compounding ways.
+
+**It is sampled far too slowly.** Vehicle state keeps only the latest value of
+each signal, and the display reads it ten times a second. The battery frame
+arrives much faster than that, so most voltage and current pairs are overwritten
+before the screen ever looks, and the pair it does read is an arbitrary instant
+rather than the peak of that window.
+
+**It is smoothed.** A low-pass filter keeps the digits from churning, at a cost
+that is easy to underestimate:
+
+| Time into a burst | Fraction shown | Reads low by |
+| --- | --- | --- |
+| 0.1 s | 33% | 3.0x |
+| 0.2 s | 56% | 1.8x |
+| 0.5 s | 87% | 1.15x |
+| 1.0 s | 98% | 1.02x |
+
+Anything shorter than about 0.17 s is at least halved by the filter alone. On
+top of that, power climbs through a burst as revs build, so the peak lands
+exactly when the filter is still catching up. A one to three second pull,
+glanced at once, can easily look half what it was. Regeneration events are
+shorter still, which is why both directions look wrong.
+
+**The peaks screen is not affected.** Those figures are captured one CAN frame
+at a time inside the decoder, gated on the frame's end-to-end check and the same
+plausibility window the gauge uses, so they are the real extremes. The ring also
+carries a peak-hold marker showing the highest power of the last few seconds,
+so a glance catches the peak even while the digits lag.
+
+`S2_DISPLAY_POWER_TAU_MS` sets the smoothing, defaulting to 200 ms. Setting it
+to 0 turns smoothing off entirely, at the cost of a number that jumps around.
+
+**The arithmetic itself checks out.** Power is `-(pack volts x pack amps)`, and
+the current decode matches the database's documented formula exactly, with its
+zero point pinned by contactor-open frames reading exactly zero amps. Five
+independent anchors each break by about a factor of two if the current scale
+were doubled: the 63 kW rating against 57.6 kW measured at wide-open throttle,
+a recorded 69 kW peak, the bike's own watt-hour meter agreeing to within 12%
+over a ride, Level 1 charging matching wall power, and the measured 16 mm² HV
+cable. The one genuinely open question is that the absolute scale rests on a
+single wall-power match; the test that would settle it is a Level 2 charge,
+which should read **+12 to +13 A** on the battery screen.
 
 ### Why torque is an estimate
 
@@ -827,7 +879,7 @@ src/uds_client.[ch]      ISO-TP transport + UDS 0x22 poller
 src/uds_decode.[ch]      per-DID interpretation
 src/status_led.[ch]      WS2812 via RMT
 src/vehicle_button.[ch]  handlebar-button table and press detection (pure)
-src/ride_limits.h        plausibility/freshness rules shared by the screen and BLE
+src/ride_limits.h        plausibility/freshness rules and the per-frame extremes (pure)
 src/ota.[ch]             update mode: access point, upload page, image write, rollback
 src/ble_proto.[ch]       BLE wire formats and command grammar (pure, host-testable)
 src/ble_telemetry.[ch]   NimBLE peripheral: GATT table, advertising, publisher task
@@ -843,6 +895,7 @@ test/test_gfx/           renderer primitive tests
 test/test_screens/       layout tests: frame bounds, ring clearance, placeholders
 test/test_ble_proto/     wire-format, fragmentation and command-parser tests
 test/test_vehicle_button/ button table and press-detection tests
+test/test_ride_extremes/ peak tracking: both ends, gating, and what sampling misses
 ```
 
 ### Updating the database

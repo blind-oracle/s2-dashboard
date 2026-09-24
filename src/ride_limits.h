@@ -83,6 +83,118 @@ static inline double ride_torque_nm(double counts)
     return counts / RIDE_TORQUE_PER_NM;
 }
 
+/* ------------------------------------------------------------- extremes --- */
+
+/*
+ * The largest values seen since boot.
+ *
+ * These are fed one CAN frame at a time from the decoder, NOT from the display.
+ * The display reads vehicle state ten times a second while the battery frame
+ * arrives far faster, so four of every five voltage and current pairs are
+ * overwritten before the display sees them, and the one it does see is an
+ * arbitrary instant rather than the peak. The ride screen's smoothing then
+ * takes another bite: a 0.2 s time constant shows barely half of a step after
+ * 0.2 s. Together that is why a glanced power figure reads low on a short
+ * burst, and why a peak worth trusting has to be captured per frame.
+ *
+ * Pure and header-only, so the host tests can drive it directly.
+ */
+typedef struct {
+    bool pack_seen;
+    double power_max_kw;    /* most power out of the pack */
+    double power_min_kw;    /* most regeneration, so the most negative */
+    double amps_max;        /* most charging, since current is charge-positive */
+    double amps_min;        /* most discharging */
+
+    bool torque_seen;
+    double torque_max_counts;
+
+    bool accel_seen;
+    double accel_max, accel_min;
+} ride_extremes_t;
+
+static inline void ride_extremes_reset(ride_extremes_t *e)
+{
+    if (e) {
+        e->pack_seen = false;
+        e->power_max_kw = 0.0;
+        e->power_min_kw = 0.0;
+        e->amps_max = 0.0;
+        e->amps_min = 0.0;
+        e->torque_seen = false;
+        e->torque_max_counts = 0.0;
+        e->accel_seen = false;
+        e->accel_max = 0.0;
+        e->accel_min = 0.0;
+    }
+}
+
+/*
+ * One voltage and current pair from a single frame. Gated on the same
+ * plausibility rule the gauge uses: without it one glitched decode would stick
+ * as a permanent false peak, which is worse than missing one.
+ */
+static inline void ride_extremes_pack(ride_extremes_t *e, double volts, double amps)
+{
+    if (!e || !ride_pack_sample_plausible(volts, amps)) {
+        return;
+    }
+    double kw = ride_power_kw(volts, amps);
+    if (!e->pack_seen) {
+        e->pack_seen = true;
+        e->power_max_kw = e->power_min_kw = kw;
+        e->amps_max = e->amps_min = amps;
+        return;
+    }
+    if (kw > e->power_max_kw) {
+        e->power_max_kw = kw;
+    }
+    if (kw < e->power_min_kw) {
+        e->power_min_kw = kw;
+    }
+    if (amps > e->amps_max) {
+        e->amps_max = amps;
+    }
+    if (amps < e->amps_min) {
+        e->amps_min = amps;
+    }
+}
+
+/* Only the maximum is interesting: the negative end is regeneration braking. */
+static inline void ride_extremes_torque(ride_extremes_t *e, double counts)
+{
+    if (!e || !ride_torque_plausible(counts)) {
+        return;
+    }
+    if (!e->torque_seen || counts > e->torque_max_counts) {
+        e->torque_seen = true;
+        e->torque_max_counts = counts;
+    }
+}
+
+/*
+ * Longitudinal acceleration, in the raw counts the IMU reports. No plausibility
+ * rule exists for this axis, so the caller gates on the frame's own end-to-end
+ * check instead.
+ */
+static inline void ride_extremes_accel(ride_extremes_t *e, double counts)
+{
+    if (!e) {
+        return;
+    }
+    if (!e->accel_seen) {
+        e->accel_seen = true;
+        e->accel_max = e->accel_min = counts;
+        return;
+    }
+    if (counts > e->accel_max) {
+        e->accel_max = counts;
+    }
+    if (counts < e->accel_min) {
+        e->accel_min = counts;
+    }
+}
+
 #ifdef __cplusplus
 }
 #endif

@@ -70,6 +70,17 @@ static const char *TAG = "display";
 #else
 #define OPT_LONG_PRESS_US 0
 #endif
+/*
+ * Smoothing on the hero power figure. Longer is steadier to read but hides
+ * short events: at 0.2 s the display shows only about half of a step after
+ * 0.2 s, and is within 2% after a second. The peaks screen is unaffected, since
+ * those are captured per CAN frame.
+ */
+#ifdef CONFIG_S2_DISPLAY_POWER_TAU_MS
+#define OPT_POWER_TAU_S ((double)CONFIG_S2_DISPLAY_POWER_TAU_MS / 1000.0)
+#else
+#define OPT_POWER_TAU_S 0.2
+#endif
 
 /*
  * The button is polled from the render loop, whose period is the tick plus
@@ -280,9 +291,15 @@ static double s_coolant_c, s_inverter_c;
 static int64_t s_coolant_ts, s_inverter_ts;
 static bool s_coolant_seen, s_inverter_seen;
 
-/* Longitudinal extremes since boot. */
-static double s_accel_max_pos, s_accel_max_neg;
-static bool s_accel_seen;
+/*
+ * Peak-hold for the ring marker: the highest power of the last few seconds.
+ * Since-restart extremes are owned by the decoder (vs_extremes) because the
+ * display samples far too slowly to catch them.
+ */
+#define POWER_HOLD_US 4000000LL
+static double s_power_hold_kw;
+static int64_t s_power_hold_ts;
+static bool s_power_hold_valid;
 
 /* min/avg/max across however many of the three pack sensors are reporting. */
 static unsigned temp_stats(const double *v, const bool *ok, unsigned n, double *mn, double *av,
@@ -449,6 +466,8 @@ static void snapshot(dash_data_t *d, int64_t now, double dt_s)
         tyre_ts = tf->ts_us < tr->ts_us ? tf->ts_us : tr->ts_us;
     }
 
+    ride_extremes_t ext = *vs_extremes();
+
     const vs_uds_t *u = vs_uds();
     soh_ok = u->soh_valid;
     soh = u->soh_pct;
@@ -470,7 +489,7 @@ static void snapshot(dash_data_t *d, int64_t now, double dt_s)
     d->power_state = ride_freshness(power_ok, power_ts, now, RIDE_STALE_FAST_US);
     if (power_ok) {
         double raw_kw = ride_power_kw(volts, amps);
-        d->power_kw = filter(&s_power_filt, &s_power_filt_valid, raw_kw, dt_s, 0.2);
+        d->power_kw = filter(&s_power_filt, &s_power_filt_valid, raw_kw, dt_s, OPT_POWER_TAU_S);
     }
 
     d->torque_state = ride_freshness(t_ok, t_ts, now, RIDE_STALE_FAST_US);
@@ -487,6 +506,31 @@ static void snapshot(dash_data_t *d, int64_t now, double dt_s)
 
     d->rpm_state = ride_freshness(rpm_seen, rpm_ts, now, RIDE_STALE_FAST_US);
     d->motor_rpm = rpm;
+
+    /*
+     * Peak hold for the ring marker. Driven from the decoder's per-frame
+     * maximum rather than this sample, so it shows what actually happened
+     * between redraws rather than what this one sample caught.
+     */
+    if (ext.pack_seen && (!s_power_hold_valid || ext.power_max_kw > s_power_hold_kw)) {
+        s_power_hold_kw = ext.power_max_kw;
+        s_power_hold_ts = now;
+        s_power_hold_valid = true;
+    }
+    if (s_power_hold_valid && (now - s_power_hold_ts) > POWER_HOLD_US) {
+        s_power_hold_valid = false;
+    }
+    d->power_hold_kw = s_power_hold_kw;
+    d->power_hold_valid = s_power_hold_valid;
+
+    /* ---- peaks, all captured one CAN frame at a time by the decoder ---- */
+    d->peaks_seen = ext.pack_seen;
+    d->peak_power_drive_kw = ext.power_max_kw;
+    d->peak_power_regen_kw = ext.power_min_kw;
+    d->peak_amps_charge = ext.amps_max;
+    d->peak_amps_discharge = ext.amps_min;
+    d->peak_torque_seen = ext.torque_seen;
+    d->peak_torque_nm = ride_torque_nm(ext.torque_max_counts);
 
     /* ---- battery ---- */
     d->cell_state = ride_freshness(cell_ok, cell_ts, now, RIDE_STALE_SLOW_US);
@@ -537,23 +581,10 @@ static void snapshot(dash_data_t *d, int64_t now, double dt_s)
     d->ambient_c = ambient;
 
     /* ---- chassis ---- */
-    if (acc_ok) {
-        if (!s_accel_seen) {
-            s_accel_seen = true;
-            s_accel_max_pos = accel;
-            s_accel_max_neg = accel;
-        }
-        if (accel > s_accel_max_pos) {
-            s_accel_max_pos = accel;
-        }
-        if (accel < s_accel_max_neg) {
-            s_accel_max_neg = accel;
-        }
-    }
     d->accel_state = ride_freshness(acc_ok, acc_ts, now, RIDE_STALE_FAST_US);
     d->accel_now = accel;
-    d->accel_max_pos = s_accel_max_pos;
-    d->accel_max_neg = s_accel_max_neg;
+    d->accel_max_pos = ext.accel_max;
+    d->accel_max_neg = ext.accel_min;
 
     d->tyre_state = ride_freshness(tyre_ok, tyre_ts, now, RIDE_STALE_TYRE_US);
     d->tyre_front_kpa = tyre_f;

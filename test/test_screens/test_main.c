@@ -329,6 +329,11 @@ static dash_data_t detail_data(void)
     d.tyre_state = FIELD_LIVE;         d.tyre_front_kpa = 510; d.tyre_rear_kpa = 248;
     d.gps_state = FIELD_LIVE;          d.gps_lat = -33.86785; d.gps_lon = -151.20732;
     d.cell_signal_state = FIELD_LIVE;  d.cell_signal = 141;
+    d.peaks_seen = true;
+    d.peak_power_drive_kw = 69.4; d.peak_power_regen_kw = -18.6;
+    d.peak_amps_charge = 41; d.peak_amps_discharge = -241;
+    d.peak_torque_seen = true; d.peak_torque_nm = 263;
+    d.power_hold_valid = true; d.power_hold_kw = 69.4;
     snprintf(d.plmn, sizeof(d.plmn), "310 410");
     d.uds_enabled = true;
     return d;
@@ -618,6 +623,90 @@ static void test_update_screen_reports_channel_and_power(void)
     }
 }
 
+
+/* The peaks screen is the answer to "the live number reads low": it shows what
+ * the decoder actually saw, so it must render every combination safely. */
+void test_peaks_screen_renders(void)
+{
+    dash_data_t d = detail_data();
+    render(5, &d);
+    TEST_ASSERT_TRUE_MESSAGE(inside_frame(), "the peaks screen draws outside the panel");
+    unsigned with = count_colour(GFX_RGB(0xFF, 0xFF, 0xFF));
+
+    /* Nothing seen yet: placeholders, not zeros. */
+    dash_data_t none;
+    memset(&none, 0, sizeof(none));
+    render(5, &none);
+    TEST_ASSERT_TRUE(inside_frame());
+    TEST_ASSERT_NOT_EQUAL_UINT_MESSAGE(with, count_colour(GFX_RGB(0xFF, 0xFF, 0xFF)),
+                                       "the peaks screen looks the same with no data");
+
+    /* Extremes beyond anything the bike can do must still fit. */
+    dash_data_t big = detail_data();
+    big.peak_power_drive_kw = 999.9;
+    big.peak_power_regen_kw = -999.9;
+    big.peak_amps_charge = 9999;
+    big.peak_amps_discharge = -9999;
+    big.peak_torque_nm = -9999;
+    render(5, &big);
+    TEST_ASSERT_TRUE_MESSAGE(inside_frame(), "extreme peaks overflow the panel");
+}
+
+/* Power and torque are seen separately, so one may be known and not the other. */
+void test_peaks_screen_handles_partial_data(void)
+{
+    dash_data_t d;
+    memset(&d, 0, sizeof(d));
+    d.peaks_seen = true;
+    d.peak_power_drive_kw = 40;
+    d.peak_torque_seen = false;
+    render(5, &d);
+    TEST_ASSERT_TRUE(inside_frame());
+
+    memset(&d, 0, sizeof(d));
+    d.peak_torque_seen = true;
+    d.peak_torque_nm = 263;
+    render(5, &d);
+    TEST_ASSERT_TRUE(inside_frame());
+}
+
+/* The ring's peak marker is what makes a short burst visible at a glance. */
+void test_ring_peak_marker(void)
+{
+    dash_data_t d = live_data();
+    d.power_state = FIELD_LIVE;
+    d.power_kw = 5.0;
+
+    d.power_hold_valid = false;
+    render(0, &d);
+    unsigned without = count_colour(GFX_RGB(0xFF, 0xFF, 0xFF));
+
+    /* Below the red zone the marker is white, like the zero mark. */
+    d.power_hold_valid = true;
+    d.power_hold_kw = 30.0;
+    render(0, &d);
+    TEST_ASSERT_TRUE(inside_frame());
+    TEST_ASSERT_NOT_EQUAL_UINT_MESSAGE(without, count_colour(GFX_RGB(0xFF, 0xFF, 0xFF)),
+                                       "the peak marker is not drawn");
+
+    /* Above it the marker takes the red-zone colour, so a big peak stands out. */
+    unsigned red_before = count_colour(C_PEAK);
+    d.power_hold_kw = 55.0;
+    render(0, &d);
+    TEST_ASSERT_GREATER_THAN_UINT_MESSAGE(red_before, count_colour(C_PEAK),
+                                          "a peak past the red zone is not marked in red");
+
+    /* A hold beyond full scale must clamp rather than draw off the ring. */
+    d.power_hold_kw = 500.0;
+    render(0, &d);
+    TEST_ASSERT_TRUE(inside_frame());
+
+    /* A hold inside the deadband is not worth marking. */
+    d.power_hold_kw = 0.05;
+    render(0, &d);
+    TEST_ASSERT_TRUE(inside_frame());
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -633,6 +722,9 @@ int main(void)
     RUN_TEST(test_every_screen_stays_inside_the_panel);
     RUN_TEST(test_every_screen_stays_inside_when_nothing_is_known);
     RUN_TEST(test_screens_beyond_the_implemented_ones);
+    RUN_TEST(test_peaks_screen_renders);
+    RUN_TEST(test_peaks_screen_handles_partial_data);
+    RUN_TEST(test_ring_peak_marker);
     RUN_TEST(test_detail_screens_show_placeholders_not_zeros);
     RUN_TEST(test_pressure_conversion);
     RUN_TEST(test_telematics_screen_explains_a_missing_uds);

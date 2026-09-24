@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "e2e.h"
+#include "ride_limits.h"
 #include "s2_dbc_gen.h"
 
 #ifdef __cplusplus
@@ -90,6 +91,12 @@ vs_signal_t *vs_signal(uint16_t index);            /* index < S2_SIG__COUNT */
 vs_message_t *vs_message(uint16_t message_index);  /* index < s2_dbc_message_count */
 vs_derived_t *vs_derived(void);
 vs_uds_t *vs_uds(void);
+
+/*
+ * Largest values seen since boot. Fed one frame at a time from the decoder, so
+ * these catch peaks the display's ten-times-a-second sampling never sees.
+ */
+ride_extremes_t *vs_extremes(void);
 
 /* Record a decoded signal; returns true when the value changed. */
 bool vs_update_signal(uint16_t index, uint64_t raw, double value, int64_t ts_us);

@@ -76,7 +76,7 @@ typedef struct {
     /* --- screen 4, chassis --- */
     field_state_t accel_state;
     double accel_now;       /* 0x122 longitudinal, raw counts */
-    double accel_max_pos;   /* extremes observed since boot */
+    double accel_max_pos;   /* extremes observed since boot, tracked per frame */
     double accel_max_neg;
 
     field_state_t tyre_state;
@@ -89,6 +89,24 @@ typedef struct {
     field_state_t cell_signal_state;
     double cell_signal;     /* TCU DID 0297 byte 0 */
     char plmn[DASH_PLMN_MAX];                       /* TCU DID 0296, "MCC MNC" */
+
+    /*
+     * --- screen 6, peaks ---
+     * Captured one CAN frame at a time in the decoder, not sampled at the
+     * refresh rate, so these are the real extremes rather than whatever the
+     * display happened to catch. Reset when the board restarts.
+     */
+    bool peaks_seen;
+    double peak_power_drive_kw;     /* most out of the pack */
+    double peak_power_regen_kw;     /* most into it, so the most negative */
+    double peak_amps_charge;        /* current is charge-positive */
+    double peak_amps_discharge;
+    bool peak_torque_seen;
+    double peak_torque_nm;
+
+    /* Highest power of the last few seconds, for the ring's peak marker. */
+    double power_hold_kw;
+    bool power_hold_valid;
 } dash_data_t;
 
 /*
@@ -129,7 +147,7 @@ typedef struct {
 } update_data_t;
 
 /* How many screens the renderer actually draws; the rest are placeholders. */
-#define SCREENS_IMPLEMENTED 5u
+#define SCREENS_IMPLEMENTED 6u
 
 /*
  * Convert a tyre pressure from the kPa the bus reports into the unit chosen in

@@ -12,6 +12,7 @@ static unsigned s_unknown_count;
 static uint32_t s_unknown_overflow;
 static vs_derived_t s_derived;
 static vs_uds_t s_uds;
+static ride_extremes_t s_extremes;
 static SemaphoreHandle_t s_mutex;
 
 void vs_init(void)
@@ -21,6 +22,7 @@ void vs_init(void)
     memset(s_unknown, 0, sizeof(s_unknown));
     memset(&s_derived, 0, sizeof(s_derived));
     memset(&s_uds, 0, sizeof(s_uds));
+    ride_extremes_reset(&s_extremes);
     s_unknown_count = 0;
     s_mutex = xSemaphoreCreateMutex();
 }
@@ -53,6 +55,11 @@ vs_derived_t *vs_derived(void)
 vs_uds_t *vs_uds(void)
 {
     return &s_uds;
+}
+
+ride_extremes_t *vs_extremes(void)
+{
+    return &s_extremes;
 }
 
 bool vs_update_signal(uint16_t index, uint64_t raw, double value, int64_t ts_us)

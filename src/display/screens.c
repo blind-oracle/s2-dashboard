@@ -137,6 +137,17 @@ static void draw_ring(gfx_t *g, const dash_data_t *d)
     for (double kw = -REGEN_FS + 5.0; kw < POWER_FS; kw += 10.0) {
         gfx_ring_tick(g, CX, CY, R_IN, R_TICK_MIN, angle_for_kw(kw), 4, C_DIM);
     }
+    /*
+     * Peak-hold marker: the highest power of the last few seconds. The digits
+     * are smoothed and the display only redraws ten times a second, so a glance
+     * during a short burst under-reads badly; this leaves the peak visible for
+     * long enough to be seen. The peaks screen keeps the since-restart figures.
+     */
+    if (d->power_hold_valid && d->power_hold_kw > DEADBAND_KW) {
+        gfx_ring_tick(g, CX, CY, R_IN, R_OUT, angle_for_kw(d->power_hold_kw), 3,
+                      d->power_hold_kw > PEAK_KW ? C_PEAK : C_VALUE);
+    }
+
     gfx_fill_ring(g, CX, CY, R_IN, R_OUT, A_ZERO - 1.5f, A_ZERO + 1.5f, C_VALUE);
 }
 
@@ -429,6 +440,36 @@ static void render_telematics_screen(gfx_t *g, const dash_data_t *d)
     }
 }
 
+static void render_peaks_screen(gfx_t *g, const dash_data_t *d)
+{
+    char a[12], b[12], c[12];
+    list_title(g, "PEAKS");
+
+    field_state_t st = d->peaks_seen ? FIELD_LIVE : FIELD_MISSING;
+
+    /*
+     * These come from the decoder, one CAN frame at a time, so they are the
+     * real extremes. The ride screen's live number is sampled ten times a
+     * second and smoothed, which is why it looks lower than these during a
+     * short burst.
+     */
+    fmt(a, sizeof(a), st, "--.-", "%.1f", d->peak_power_regen_kw);
+    fmt(b, sizeof(b), d->power_state, "--.-", "%.1f", d->power_kw);
+    fmt(c, sizeof(c), st, "--.-", "%.1f", d->peak_power_drive_kw);
+    list_triple(g, 0, "POWER kW", "REGEN", "NOW", "DRIVE", a, b, c, st);
+
+    fmt(a, sizeof(a), st, "---", "%.0f", d->peak_amps_charge);
+    fmt(b, sizeof(b), d->current_state, "---", "%.0f", d->pack_amps);
+    fmt(c, sizeof(c), st, "---", "%.0f", d->peak_amps_discharge);
+    list_triple(g, 2, "CURRENT A", "CHARGE", "NOW", "DISCHG", a, b, c, st);
+
+    field_state_t ts = d->peak_torque_seen ? FIELD_LIVE : FIELD_MISSING;
+    fmt(a, sizeof(a), ts, "----", "%.0f", d->peak_torque_nm);
+    list_row(g, 4, "MAX TORQUE  ~Nm", a, ts);
+
+    gfx_text_center(g, g->w / 2, list_y(5) + 8, "SINCE RESTART, PER CAN FRAME", 1, C_DIM);
+}
+
 static void render_empty_screen(gfx_t *g, unsigned screen)
 {
     char buf[16];
@@ -448,6 +489,7 @@ void screens_render(gfx_t *g, unsigned screen, unsigned count, const dash_data_t
     case 2: render_thermal_screen(g, d); break;
     case 3: render_chassis_screen(g, d); break;
     case 4: render_telematics_screen(g, d); break;
+    case 5: render_peaks_screen(g, d); break;
     default: render_empty_screen(g, screen); break;
     }
     draw_dots(g, screen, count);
