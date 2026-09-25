@@ -34,7 +34,7 @@ idf_component_register(
         "display/screens.c"
     INCLUDE_DIRS "." "gen" "display" "${CMAKE_CURRENT_LIST_DIR}/../include"
     REQUIRES esp_driver_twai esp_timer esp_ringbuf app_update
-    PRIV_REQUIRES bt nvs_flash esp_wifi esp_netif esp_event esp_http_server esp_driver_gpio esp_driver_rmt esp_driver_spi esp_driver_ledc esp_lcd driver
+    PRIV_REQUIRES bt nvs_flash esp_wifi esp_netif esp_event esp_http_server esp_driver_gpio esp_driver_rmt esp_driver_spi esp_driver_ledc esp_lcd
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Wno-unused-parameter)

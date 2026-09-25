@@ -210,7 +210,9 @@ esp_err_t panel_init(void)
                         TAG, "panel io");
 
     esp_lcd_panel_dev_config_t panel_cfg = {
-        .reset_gpio_num = CONFIG_S2_DISPLAY_RST_GPIO,
+        /* ESP-IDF 6 narrowed this from int to gpio_num_t; the Kconfig value is an
+         * int, and -1 for "no reset pin" is GPIO_NUM_NC. */
+        .reset_gpio_num = (gpio_num_t)CONFIG_S2_DISPLAY_RST_GPIO,
 #if CONFIG_S2_DISPLAY_BGR
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
 #else

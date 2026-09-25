@@ -103,3 +103,41 @@ CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
 # reflex: if the rail already collapsed once, the radio should not immediately
 # ask for the largest peak current on the board again.
 CONFIG_ESP_PHY_REDUCE_TX_POWER=y
+
+# ---------------------------------------------------------------- project ---
+# Project options whose Kconfig default is NOT what this bike runs. Everything
+# else in the S2 Dashboard menu is left at its Kconfig default, so only the
+# genuine deviations live here.
+#
+# These used to exist solely in the generated sdkconfig, which is committed even
+# though it is gitignored. That made the generated file load-bearing, and
+# regenerating it against a new ESP-IDF silently reverted all three. Keeping
+# them here instead means the generated file can be deleted and rebuilt freely.
+
+# Leave listen-only mode OFF. It defaults ON, and deliberately so: a passive tap
+# cannot disturb the motorcycle's bus. This bike has been verified decoding
+# broadcast frames cleanly, and UDS polling below requires transmitting, so the
+# tap is allowed to ACK. S2_UDS_ENABLE has "depends on !S2_CAN_LISTEN_ONLY", so
+# with this line missing the entire UDS menu vanishes from the config rather
+# than merely turning off - which is how it silently disappeared once already.
+CONFIG_S2_CAN_LISTEN_ONLY=n
+
+# Poll the BCM gateway with UDS. Off upstream because it transmits, and this is
+# otherwise a listen-only tap; on here because state of health, GPS and the
+# cellular parameters have no broadcast source at all.
+CONFIG_S2_UDS_ENABLE=y
+
+# Also poll the TCU (0x7D4), the only source of GPS position on this bike.
+CONFIG_S2_UDS_POLL_TCU=y
+
+# Hold the handlebar info button for 5 s to enter update mode, not the 2 s
+# default: 2 s is short enough to trigger while paging through screens.
+CONFIG_S2_OTA_LONG_PRESS_MS=5000
+
+# Tyre pressure in bar rather than the PSI default.
+CONFIG_S2_DISPLAY_PRESSURE_BAR=y
+
+# No hex dump of every UDS response. It defaults on, which is right while
+# bringing the poller up and far too noisy once it works: the catalog is walked
+# every 5 s and the dump competes with the signal-change log for the queue.
+CONFIG_S2_UDS_LOG_RAW=n

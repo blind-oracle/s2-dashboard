@@ -20,10 +20,13 @@ Firmware updates are **over Wi-Fi**: hold the screen button and the dashboard
 serves an upload page from its own access point, so the board never has to come
 out from behind the bodywork.
 
-Firmware: ESP-IDF 5.5 (C), built with PlatformIO. The default configuration is a
-**passive tap** (TWAI listen-only mode, never acknowledges or transmits). Active
-UDS polling of the diagnostic modules through the BCM gateway is implemented but
-off by default.
+Firmware: ESP-IDF 6.1 (C), built with PlatformIO. The firmware can run as a
+**passive tap** (TWAI listen-only mode, never acknowledges or transmits), which
+is what the Kconfig defaults give you. This repository ships `sdkconfig.defaults`
+with listen-only turned **off** and UDS polling **on**, because state of health,
+GPS and the cellular parameters have no broadcast source at all. Turn
+`S2_CAN_LISTEN_ONLY` back on for a build that cannot touch the bus, and verify a
+passive tap decodes cleanly before enabling UDS on a bike of your own.
 
 ## Hardware
 
@@ -160,17 +163,26 @@ board.
 
 ### Toolchain notes
 
-- The board definition and ESP-IDF 5.5 come from the **pioarduino** fork of
-  platform-espressif32; `platformio.ini` pins the exact release URL so builds are
-  reproducible.
-- PlatformIO Core 6.2.0 and pioarduino (all releases up to 55.03.311, July 2026) disagree about the SCons
-  version and the platform deletes Core's SCons package during configuration
-  (pioarduino issue #529). `tools/pio_scons_guard.py`, wired in as a `pre:` extra
-  script, reinstalls it before the build needs it. Remove it once pioarduino ships a
-  fix. Alternatives: PlatformIO Core 6.1.19, or pioarduino's own core.
-- `sdkconfig.defaults` is the source of truth for the SDK configuration. The
-  generated `sdkconfig.waveshare_esp32_s3_zero` is git-ignored; delete it to apply
-  changed defaults (defaults never override an existing generated file).
+- ESP-IDF 6.1.0 comes from the official `platformio/espressif32` platform, pinned
+  to an exact version in `platformio.ini` so builds are reproducible. A bare
+  `espressif32` would resolve to whichever installed platform has the highest
+  version number, which is not.
+- This was the **pioarduino** fork until it was pinned at ESP-IDF 5.5.1. The
+  official platform is maintained again and now ships a newer ESP-IDF than the
+  fork's stable line, so the fork is gone, and with it two workaround scripts:
+  one that restored the SCons package pioarduino deleted (its issue #529), and
+  one that recomputed the app's flash offset because pioarduino got it wrong.
+  The official builder derives the offset from ESP-IDF's own partition tooling.
+- The official platform does not ship this board, so the manifest lives in
+  `boards/waveshare_esp32_s3_zero.json`, which PlatformIO reads before the
+  platform's own. It is a verbatim copy of pioarduino's; the Arduino-only keys in
+  it are inert for an `espidf` build.
+- `sdkconfig.defaults` is the source of truth for the SDK configuration, and that
+  includes the six project options this bike does not run at their Kconfig
+  default. The generated `sdkconfig.waveshare_esp32_s3_zero` is committed but
+  disposable: delete it to apply changed defaults, because defaults never
+  override an existing generated file. Anything set **only** in the generated
+  file is silently lost the next time it is regenerated.
 - After adding or removing a `.c` file, `touch src/CMakeLists.txt` so PlatformIO
   re-runs CMake (source lists are snapshots).
 
@@ -733,28 +745,31 @@ are wireless. The layout:
 | ota_0 | `0x20000` | 1700 KB | |
 | ota_1 | `0x1d0000` | 1700 KB | |
 
-540 KB of the 4 MB part is left spare. The image is about 1.19 MB with Wi-Fi
-compiled in, which is 70% of a slot.
+540 KB of the 4 MB part is left spare. The image is about 1.32 MB with Wi-Fi and
+UDS compiled in, which is 76% of a slot. ESP-IDF 6.1 costs roughly 65 KB of
+flash over 5.5.1 and gives back about 1 KB of static RAM.
 
-Two `platformio.ini` lines make this work, and both are needed. The table is
-selected by `board_build.partitions`, **not** by the Kconfig partition option. The PlatformIO ESP-IDF builder reads the former and
+The table is selected by `board_build.partitions` in `platformio.ini`, **not** by
+the Kconfig partition option. The PlatformIO ESP-IDF builder reads the former and
 ignores the latter, taking only `PARTITION_TABLE_OFFSET` from sdkconfig. Both are
 set so menuconfig tells the truth, but only the `platformio.ini` line has any
 effect.
 
-The second line is `upload_command`, with `tools/pio_app_offset.py` behind it.
-The platform computes the app's flash offset incorrectly on the upload path and
-passes 0x10000, the single-app default. On a two-slot table 0x10000 is inside
-`otadata`, so esptool refuses the whole write:
+`partitions_two_ota_large.csv` is a stock table shipped inside ESP-IDF rather
+than a file in this repository, and it is byte-identical between 5.5.1 and 6.1.0,
+which is why the toolchain change did not move a single partition.
+
+The app's flash offset is derived by the builder from that table, and must come
+out as `0x20000`. The pioarduino fork used to get this wrong and pass `0x10000`,
+the single-app default, which on a two-slot table is inside `otadata`, so esptool
+refused the whole write:
 
 ```
 Detected overlap at address: 0x10000 for file: firmware.bin
 ```
 
-The script reads the real offset out of the partition CSV and `upload_command`
-passes it through. Both can go once the platform is fixed. If you ever see that
-error again, check what offset the script prints during a build against `ota_0`
-in the table.
+If that ever comes back, check `pio project metadata` reports
+`application_offset: 0x20000` and compare it with `ota_0` in the table.
 
 ### Doing an update
 
@@ -858,13 +873,12 @@ standstill check and rollback.
 
 ```
 platformio.ini           envs + board_build.partitions (the two-slot OTA table)
+boards/                  board manifest (the official platform does not ship this board)
 sdkconfig.defaults       SDK configuration (USB console, 4 MB flash, NimBLE, OTA, ...)
 can-db/                  vendored database (DBC + UDS catalog, CC BY 4.0)
 tools/dbc2c.py           DBC -> src/gen/s2_dbc_gen.[ch]
 tools/uds2c.py           UDS catalog -> src/gen/s2_uds_gen.[ch]
-tools/pio_scons_guard.py PlatformIO workaround (see Toolchain notes)
 tools/check_button_mapping.sh  each handlebar-button Kconfig choice -> the right table entry
-tools/pio_app_offset.py  flash the app at the offset the partition table specifies
 include/s2_dbc.h         signal/message data model (shared with host tests)
 src/main.c               tasks: decoder, summary, UDS poller, LED/housekeeping
 src/can_bus.[ch]         TWAI node (esp_driver_twai), ISR -> queue, stats, bus-off recovery
